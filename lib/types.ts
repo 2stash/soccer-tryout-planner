@@ -48,6 +48,20 @@ export type RosterMembership = {
   isOwner: boolean;
 };
 
+export type RosterInviteStatus = 'pending' | 'accepted' | 'revoked';
+
+export type RosterInvite = {
+  id: string;
+  roster_id: string;
+  email: string;
+  role: RosterRole;
+  invited_by: string;
+  status: RosterInviteStatus;
+  created_at: string;
+  accepted_at: string | null;
+  accepted_user_id: string | null;
+};
+
 export type WorkspaceKind =
   | 'personal'
   | 'master_varsity'

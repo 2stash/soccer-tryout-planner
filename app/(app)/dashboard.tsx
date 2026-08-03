@@ -15,17 +15,31 @@ import { alertRequiresOnline } from '@/lib/offline/gate';
 import { useIsOnline } from '@/lib/offline/connectivity';
 import { createRoster } from '@/lib/rosters';
 import { listMyMemberships, roleLabel } from '@/lib/rosterMembers';
+import {
+  acceptRosterInvite,
+  listPendingInvitesForEmail,
+  type PendingInviteWithRoster,
+} from '@/lib/rosterInvites';
 import type { RosterMembership } from '@/lib/types';
 import { colors, layout } from '@/constants/theme';
+
+type ListItem =
+  | { kind: 'header'; key: string; title: string }
+  | { kind: 'row'; key: string; membership: RosterMembership }
+  | { kind: 'pending'; key: string; invite: PendingInviteWithRoster };
 
 export default function DashboardScreen() {
   const { user, session, loading, signOut, configured } = useAuth();
   const { isPhone, isCompact } = useLayout();
   const isOnline = useIsOnline();
   const [memberships, setMemberships] = useState<RosterMembership[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<
+    PendingInviteWithRoster[]
+  >([]);
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [acceptBusyId, setAcceptBusyId] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -33,8 +47,12 @@ export default function DashboardScreen() {
     setLoadingList(true);
     setError(null);
     try {
-      const data = await listMyMemberships(user.id);
+      const [data, invites] = await Promise.all([
+        listMyMemberships(user.id),
+        listPendingInvitesForEmail(),
+      ]);
       setMemberships(data);
+      setPendingInvites(invites);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load teams');
     } finally {
@@ -58,6 +76,41 @@ export default function DashboardScreen() {
     () => memberships.filter((m) => !m.isOwner),
     [memberships]
   );
+
+  const listData = useMemo((): ListItem[] => {
+    const items: ListItem[] = [];
+    if (pendingInvites.length > 0) {
+      items.push({
+        kind: 'header',
+        key: 'h-pending',
+        title: 'Pending invites',
+      });
+      for (const invite of pendingInvites) {
+        items.push({
+          kind: 'pending',
+          key: `pending-${invite.id}`,
+          invite,
+        });
+      }
+    }
+    if (created.length > 0) {
+      items.push({ kind: 'header', key: 'h-created', title: 'Created' });
+      for (const m of created) {
+        items.push({ kind: 'row', key: m.roster.id, membership: m });
+      }
+    }
+    if (invited.length > 0) {
+      items.push({ kind: 'header', key: 'h-invited', title: 'Invited' });
+      for (const m of invited) {
+        items.push({
+          kind: 'row',
+          key: `invited-${m.roster.id}`,
+          membership: m,
+        });
+      }
+    }
+    return items;
+  }, [pendingInvites, created, invited]);
 
   if (!loading && (!configured || !session)) {
     return <Redirect href="/(auth)/sign-in" />;
@@ -85,6 +138,24 @@ export default function DashboardScreen() {
     }
   }
 
+  async function handleAccept(inviteId: string) {
+    if (!isOnline) {
+      alertRequiresOnline('Accepting invites');
+      return;
+    }
+    setAcceptBusyId(inviteId);
+    setError(null);
+    try {
+      const accepted = await acceptRosterInvite(inviteId);
+      await refresh();
+      router.push(`/roster/${accepted.roster_id}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to accept invite');
+    } finally {
+      setAcceptBusyId(null);
+    }
+  }
+
   function renderMembership({ item }: { item: RosterMembership }) {
     const rolesText = item.roles.map(roleLabel).join(', ');
     return (
@@ -100,6 +171,27 @@ export default function DashboardScreen() {
           {' · Open'}
         </Text>
       </Pressable>
+    );
+  }
+
+  function renderPending({ item }: { item: PendingInviteWithRoster }) {
+    const busyAccept = acceptBusyId === item.id;
+    return (
+      <View style={[styles.card, isPhone && styles.cardPhone]}>
+        <Text style={styles.cardTitle}>{item.roster.name}</Text>
+        <Text style={styles.cardMeta}>
+          {roleLabel(item.role)} · invited {item.email}
+        </Text>
+        <Pressable
+          style={[styles.acceptBtn, busyAccept && styles.disabled]}
+          disabled={busyAccept}
+          onPress={() => void handleAccept(item.id)}
+        >
+          <Text style={styles.acceptBtnText}>
+            {busyAccept ? 'Accepting…' : 'Accept'}
+          </Text>
+        </Pressable>
+      </View>
     );
   }
 
@@ -132,6 +224,7 @@ export default function DashboardScreen() {
       <Text style={styles.heading}>Dashboard</Text>
       <Text style={styles.sub}>
         Create a team / tryout, then manage players, depth, and squads.
+        Accept coach invites below when someone adds your email on Team.
       </Text>
 
       <View style={[styles.createRow, isPhone && styles.createRowStack]}>
@@ -165,24 +258,7 @@ export default function DashboardScreen() {
         <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
       ) : (
         <FlatList
-          data={[
-            ...(created.length > 0
-              ? [{ kind: 'header' as const, key: 'h-created', title: 'Created' }]
-              : []),
-            ...created.map((m) => ({
-              kind: 'row' as const,
-              key: m.roster.id,
-              membership: m,
-            })),
-            ...(invited.length > 0
-              ? [{ kind: 'header' as const, key: 'h-invited', title: 'Invited' }]
-              : []),
-            ...invited.map((m) => ({
-              kind: 'row' as const,
-              key: m.roster.id,
-              membership: m,
-            })),
-          ]}
+          data={listData}
           keyExtractor={(item) => item.key}
           contentContainerStyle={styles.list}
           ListEmptyComponent={
@@ -193,6 +269,9 @@ export default function DashboardScreen() {
           renderItem={({ item }) => {
             if (item.kind === 'header') {
               return <Text style={styles.sectionTitle}>{item.title}</Text>;
+            }
+            if (item.kind === 'pending') {
+              return renderPending({ item: item.invite });
             }
             return renderMembership({ item: item.membership });
           }}
@@ -301,6 +380,19 @@ const styles = StyleSheet.create({
     marginTop: 4,
     color: colors.muted,
     fontSize: 13,
+  },
+  acceptBtn: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  acceptBtnText: {
+    color: colors.primaryText,
+    fontWeight: '700',
+    fontSize: 14,
   },
   empty: {
     color: colors.muted,
