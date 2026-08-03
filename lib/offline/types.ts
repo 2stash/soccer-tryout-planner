@@ -1,6 +1,6 @@
 import type { MasterClaim, MasterKind } from '@/lib/masterConflicts';
 import type { RankPool } from '@/lib/assignPools';
-import type { GradeFilter } from '@/lib/availableRank';
+import type { AvailableRankPlan, GradeFilter } from '@/lib/availableRank';
 import type { DepthCacheMap, SquadDepthCache } from '@/lib/squadSections';
 import type {
   Player,
@@ -48,6 +48,8 @@ type OfflineOpBody =
       positionNumber: number;
       playerId: string;
       direction: 'up' | 'down';
+      /** Absolute post-move order for the position group (replay). */
+      orderedPlayerIds?: string[];
     }
   | {
       type: 'setStarter';
@@ -57,12 +59,20 @@ type OfflineOpBody =
       playerId: string;
       outgoingPlayerId?: string | null;
       incomingSubIndex?: number | null;
+      /** Absolute post-swap bench order at edit time (required for correct replay). */
+      desiredSubIds?: string[];
+      nextPositions?: number[];
+      needsTeamMove?: boolean;
+      liveNeedsAssign?: boolean;
+      needsPosition?: boolean;
     }
   | {
       type: 'moveSub';
       squadTeam: SquadTeam;
       playerId: string;
       direction: 'up' | 'down';
+      /** Absolute post-move bench order (replay). */
+      orderedPlayerIds?: string[];
     }
   | {
       type: 'moveAvailable';
@@ -92,6 +102,12 @@ type OfflineOpBody =
   | {
       type: 'resetAvailableOrder';
       pool?: RankPool;
+    }
+  | {
+      /** Normalize contiguous Available/Unavailable ranks (load-time ensure). */
+      type: 'syncAvailableRanks';
+      pool: RankPool;
+      ranks: AvailableRankPlan[];
     }
   | {
       type: 'adminLiveRemoveFromTeam';

@@ -72,7 +72,8 @@ type MasterConflictValue = {
   loading: boolean;
   /** Increments after each successful claims/depth refresh (incl. realtime). */
   claimsRevision: number;
-  refresh: () => Promise<void>;
+  /** Pass `{ force: true }` to bypass the pending-outbox read gate (post-drain). */
+  refresh: (opts?: { force?: boolean }) => Promise<void>;
   /** Export claims/depth for offline snapshot. */
   exportSnapshotSlice: () => MasterConflictSnapshotSlice;
   /** Restore claims/depth from offline snapshot. */
@@ -100,7 +101,7 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
     loading: roleLoading,
     isAdminLiveMode,
   } = useActiveRole();
-  const { isOnline } = useOffline();
+  const { isOnline, outboxReady, pendingCount, isSyncing } = useOffline();
   const [claimsByPlayer, setClaimsByPlayer] = useState<
     Map<string, MasterClaim[]>
   >(new Map());
@@ -120,9 +121,17 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isOnlineRef = useRef(isOnline);
   isOnlineRef.current = isOnline;
+  // Only block reads while unsynced local writes exist — not syncError/offline flags.
+  const pendingLocalRef = useRef(false);
+  pendingLocalRef.current = !outboxReady || pendingCount > 0 || isSyncing;
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { force?: boolean }) => {
     if (!isOnlineRef.current) {
+      setLoading(false);
+      return;
+    }
+    // Keep optimistic Live claims while outbox still has local edits.
+    if (!opts?.force && pendingLocalRef.current) {
       setLoading(false);
       return;
     }
@@ -171,20 +180,24 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
   }, [masters, rosterId]);
 
   useEffect(() => {
-    if (roleLoading) return;
+    if (roleLoading || !outboxReady) return;
     // Don't refetch/clear on connectivity flips — offline keeps last claims.
     if (!isOnlineRef.current) {
       setLoading(false);
       return;
     }
+    if (pendingLocalRef.current) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     void refresh();
-  }, [roleLoading, masterIdsKey, refresh]);
+  }, [roleLoading, outboxReady, masterIdsKey, refresh, pendingCount, isSyncing]);
 
   useForegroundRefresh(
-    Boolean(isOnline && masters.length > 0),
+    Boolean(isOnline && outboxReady && masters.length > 0 && pendingCount === 0),
     () => {
-      if (!isOnlineRef.current) return;
+      if (!isOnlineRef.current || pendingLocalRef.current) return;
       void refresh();
     },
     12_000

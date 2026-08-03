@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -325,9 +324,7 @@ export default function SquadPlannerPitchScreen() {
               ))
             )}
           </View>
-        ) : loading || !depthReady ? (
-          <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
-        ) : squadPlayers.length === 0 ? (
+        ) : !loading && depthReady && squadPlayers.length === 0 ? (
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>No players on {teamLabel}</Text>
             <Text style={styles.emptyText}>
@@ -340,8 +337,8 @@ export default function SquadPlannerPitchScreen() {
           <>
             <ScrollView horizontal showsHorizontalScrollIndicator>
               <PitchBoard
-                squadPlayers={squadPlayers}
-                depthEntries={depthEntries}
+                squadPlayers={depthReady ? squadPlayers : []}
+                depthEntries={depthReady ? depthEntries : []}
                 density={isDesktop ? 'default' : 'compact'}
                 onRemoveFromSlot={(player, slotNumber) =>
                   void handleRemoveFromSlot(player, slotNumber)
@@ -351,7 +348,7 @@ export default function SquadPlannerPitchScreen() {
 
             <View style={styles.bench}>
               <Text style={styles.benchTitle}>
-                No pitch position ({noPosition.length})
+                No pitch position ({depthReady ? noPosition.length : 0})
               </Text>
               <Text style={styles.benchHint}>
                 On {teamLabel}, but no position set yet on All Players. Set one
@@ -359,7 +356,9 @@ export default function SquadPlannerPitchScreen() {
                 automatically.
               </Text>
 
-              {noPosition.length === 0 ? (
+              {!depthReady ? (
+                <Text style={styles.emptyText}>Loading pitch…</Text>
+              ) : noPosition.length === 0 ? (
                 <Text style={styles.emptyText}>
                   Every player on this squad has at least one position.
                 </Text>

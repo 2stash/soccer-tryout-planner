@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -94,12 +93,10 @@ export function AdminLiveAssign() {
     claimsByPlayer,
     officialPlayers,
     masterWorkspacesList,
-    loading: claimsLoading,
   } = useMasterConflicts();
   const {
     roster,
     players,
-    loading: playersLoading,
     assignSquad,
     removeFromLiveTeam,
   } = useRosterData();
@@ -368,9 +365,6 @@ export function AdminLiveAssign() {
     { key: 'unavailable', label: 'Unavailable' },
     ...SQUAD_TEAMS.map((t) => ({ key: t.id as SquadTeam, label: t.label })),
   ];
-
-  // Do not block on poolState — teams come from claims; pools can fill in after.
-  const loading = (playersLoading || claimsLoading) && players.length === 0;
 
   function renderRankedActions(player: Player, busy: boolean, poolKey: RankPool) {
     const otherPool: PlayerAssignment | null =
@@ -799,14 +793,6 @@ export function AdminLiveAssign() {
             )}
           </View>
         )}
-      </View>
-    );
-  }
-
-  if (loading) {
-    return (
-      <View style={styles.screen}>
-        <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
       </View>
     );
   }

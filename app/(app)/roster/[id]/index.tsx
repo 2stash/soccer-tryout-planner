@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -36,8 +35,6 @@ import {
 } from '@/lib/schoolYear';
 import {
   buildFormationSectionFromPlayers,
-  buildSimpleSquadSections,
-  buildSquadFormationSection,
   buildViewsFromCache,
   getSquadDepthViewFromCache,
   type SquadPlayerSection,
@@ -231,28 +228,21 @@ export default function RosterPlayersScreen() {
       return next;
     }
 
-    let next = !depthReady
-      ? buildSimpleSquadSections(players)
-      : buildViewsFromCache(
-          players,
-          depthCache,
-          undefined,
-          isMasterView && ownSquad ? [ownSquad] : []
-        ).squadSections;
+    // Always paint squad shells (vacant XI + empty Subs) — never collapse to a spinner.
+    const alwaysSquads: SquadTeam[] =
+      isMasterView && ownSquad
+        ? [ownSquad]
+        : SQUAD_TEAMS.map((t) => t.id);
+    let next = buildViewsFromCache(
+      players,
+      depthCache,
+      undefined,
+      alwaysSquads
+    ).squadSections;
 
     if (isMasterView && ownSquad) {
       const ownLabel =
         SQUAD_TEAMS.find((t) => t.id === ownSquad)?.label ?? ownSquad;
-      const hasOwn = next.some(
-        (section) =>
-          section.squadTeam === ownSquad || section.title === ownLabel
-      );
-      if (!hasOwn) {
-        next = [
-          buildSquadFormationSection(ownSquad, players, depthCache),
-          ...next,
-        ];
-      }
       next = next.filter(
         (section) =>
           section.title === 'Available' ||
@@ -281,7 +271,6 @@ export default function RosterPlayersScreen() {
   }, [
     players,
     depthCache,
-    depthReady,
     isMasterView,
     isAdminLiveMode,
     ownSquad,
@@ -609,13 +598,11 @@ export default function RosterPlayersScreen() {
             </Pressable>
           ) : null}
 
-          {loading ? (
-            <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
-          ) : (
+          {(
             <PlayerCardList
               sections={filteredSections}
-              sectionsPending={!depthReady && players.length > 0}
-              emptyPlayers={players.length === 0}
+              sectionsPending={loading || (!depthReady && players.length > 0)}
+              emptyPlayers={!loading && players.length === 0}
               formationLayout={!isPhone}
               starterSlotActions={isPhone}
               onPressPlayer={setEditing}
@@ -653,8 +640,9 @@ export default function RosterPlayersScreen() {
           )}
 
           <Text style={styles.hint}>
-            {players.length} player{players.length === 1 ? '' : 's'}
-            {hintExtra}
+            {loading && players.length === 0
+              ? 'Loading players…'
+              : `${players.length} player${players.length === 1 ? '' : 's'}${hintExtra}`}
           </Text>
         </View>
       </ScrollView>

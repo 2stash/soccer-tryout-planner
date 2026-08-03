@@ -63,6 +63,8 @@ type OfflineValue = {
   pendingCount: number;
   syncError: string | null;
   scope: OfflineScope | null;
+  /** True after the first outbox load for the current scope. */
+  outboxReady: boolean;
   /** True when writes should go to the outbox (offline or queue draining). */
   shouldQueueWrites: boolean;
   /** True when core tryout editing is allowed offline (snapshot was loaded or online). */
@@ -90,6 +92,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [offlineReady, setOfflineReady] = useState(false);
+  const [outboxReady, setOutboxReady] = useState(false);
   const [drainNonce, setDrainNonce] = useState(0);
 
   const replayRef = useRef<ReplayFn | null>(null);
@@ -133,9 +136,22 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (roleLoading || !scope) return;
-    void refreshPendingCount();
-  }, [roleLoading, scope, refreshPendingCount]);
+    if (roleLoading || !scope) {
+      setOutboxReady(false);
+      setPendingCount(0);
+      return;
+    }
+    let active = true;
+    setOutboxReady(false);
+    void loadOutbox(scope).then((ops) => {
+      if (!active) return;
+      setPendingCount(ops.length);
+      setOutboxReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [roleLoading, scope]);
 
   const enqueue = useCallback(async (op: OfflineOpInput) => {
     const s = scopeRef.current;
@@ -235,18 +251,15 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       await refreshPendingCount();
     }
 
-    // Refresh from server after a successful write drain — best effort only.
-    // A hung refresh must not leave the UI on Syncing or re-queue finished ops.
+    // After a successful write drain, force-reconcile (RosterData drainComplete).
+    // Do NOT flip isSyncing here: that gated remote pulls/claims and hid desktop edits.
     if (wroteOps && !drainFailed && isOnlineRef.current) {
       const complete = drainCompleteRef.current;
       if (complete) {
         try {
-          setIsSyncing(true);
           await withTimeout(complete(), REFRESH_TIMEOUT_MS, 'Refresh after sync');
         } catch {
-          // Ops already landed; local UI may be slightly stale until next pull.
-        } finally {
-          setIsSyncing(false);
+          // Ops already landed; next poll/focus reconcile will catch up.
         }
       }
     }
@@ -328,6 +341,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       pendingCount,
       syncError,
       scope,
+      outboxReady,
       shouldQueueWrites,
       offlineReady,
       setOfflineReady,
@@ -344,6 +358,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       pendingCount,
       syncError,
       scope,
+      outboxReady,
       shouldQueueWrites,
       offlineReady,
       enqueue,

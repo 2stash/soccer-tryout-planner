@@ -664,17 +664,15 @@ export function PlayerCardList({
   onMoveSub,
   availableRank,
 }: Props) {
-  if (sectionsPending && sections.length === 0) {
-    return null;
-  }
-
   if (sections.length === 0) {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyText}>
-          {emptyPlayers
-            ? 'No players yet. Add one or import a spreadsheet.'
-            : 'No players match this filter.'}
+          {sectionsPending
+            ? 'Loading players…'
+            : emptyPlayers
+              ? 'No players yet. Add one or import a spreadsheet.'
+              : 'No players match this filter.'}
         </Text>
       </View>
     );
@@ -692,9 +690,11 @@ export function PlayerCardList({
             r.role == null ||
             (r.role !== 'Sub' && r.positionGroup == null)
         );
-        // Formation only when rows have real XI slot metadata (not flat RO lists).
+        // Formation when this is a squad section (vacant XI slots still paint).
         const useFormation =
-          formationLayout && !starterSlotActions && starters.length > 0;
+          formationLayout &&
+          !starterSlotActions &&
+          Boolean(section.squadTeam);
         const readOnly = Boolean(section.readOnly);
         const pressPlayer = readOnly ? undefined : onPressPlayer;
         const pressStarter = readOnly ? undefined : onPressStarterSlot;
@@ -864,8 +864,7 @@ export function PlayerCardList({
               </View>
             )}
 
-            {(useFormation ||
-              (Boolean(section.squadTeam) && starters.length > 0)) && (
+            {(useFormation || Boolean(section.squadTeam)) && (
               <View style={styles.subsBlock}>
                 <Text style={styles.subsTitle}>Subs</Text>
                 {subs.length > 0 ? (

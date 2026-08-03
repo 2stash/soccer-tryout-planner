@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -870,9 +869,7 @@ function AssignSquadsPersonal() {
             </Pressable>
           ) : null}
 
-          {loading ? (
-            <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
-          ) : isPhone ? (
+          {isPhone ? (
             <>
               <View style={styles.segmentRow}>
                 {poolTabs.map((tab) => {
@@ -932,7 +929,9 @@ function AssignSquadsPersonal() {
                     <Text style={styles.count}>{phoneList.length}</Text>
                   </View>
                   {phoneList.length === 0 ? (
-                    <Text style={styles.empty}>No players yet</Text>
+                    <Text style={styles.empty}>
+                      {loading ? 'Loading…' : 'No players yet'}
+                    </Text>
                   ) : (
                     <View style={styles.list}>
                       {phoneList.map((player, index) =>

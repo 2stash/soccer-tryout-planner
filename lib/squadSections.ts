@@ -497,23 +497,22 @@ export function buildViewsFromCache(
   const available = orderAvailablePlayers(
     players.filter((p) => p.squad_team == null)
   );
-  if (available.length > 0) {
-    squadSections.push({
-      title: 'Available',
-      rankPool: 'available',
-      rows: playersToRows(available),
-    });
-    if (positionNumber != null) {
-      const availableAtPos = available.filter((p) =>
-        playerInDepthGroup(p.positions, positionNumber)
-      );
-      if (availableAtPos.length > 0) {
-        positionSections.push({
-          title: 'Available',
-          rankPool: 'available',
-          rows: playersToRows(availableAtPos),
-        });
-      }
+  // Always include Available so the tab shell stays visible while loading.
+  squadSections.push({
+    title: 'Available',
+    rankPool: 'available',
+    rows: playersToRows(available),
+  });
+  if (positionNumber != null) {
+    const availableAtPos = available.filter((p) =>
+      playerInDepthGroup(p.positions, positionNumber)
+    );
+    if (availableAtPos.length > 0 || available.length === 0) {
+      positionSections.push({
+        title: 'Available',
+        rankPool: 'available',
+        rows: playersToRows(availableAtPos),
+      });
     }
   }
   const unavailable = orderAvailablePlayers(

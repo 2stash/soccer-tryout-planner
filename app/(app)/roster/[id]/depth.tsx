@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -47,8 +46,6 @@ import {
 } from '@/lib/schoolYear';
 import {
   buildFormationSectionFromPlayers,
-  buildSimplePositionSections,
-  buildSimpleSquadSections,
   buildViewsFromCache,
   getSquadDepthViewFromCache,
   type SquadPlayerSection,
@@ -446,25 +443,20 @@ export default function DepthChartScreen() {
       return { squadSections, positionSections };
     }
 
-    if (!depthReady) {
-      return {
-        squadSections: buildSimpleSquadSections(players),
-        positionSections: buildSimplePositionSections(
-          players,
-          selectedPosition
-        ),
-      };
-    }
+    const alwaysSquads: SquadTeam[] =
+      isAdminLiveMode || !(isMasterView && ownSquad)
+        ? SQUAD_TEAMS.map((t) => t.id)
+        : [ownSquad];
+    // Paint vacant shells while depth loads — same shape as the ready view.
     return buildViewsFromCache(
       players,
       depthCache,
       selectedPosition,
-      isAdminLiveMode ? SQUAD_TEAMS.map((t) => t.id) : []
+      alwaysSquads
     );
   }, [
     players,
     depthCache,
-    depthReady,
     selectedPosition,
     isMasterView,
     isAdminLiveMode,
@@ -550,14 +542,6 @@ export default function DepthChartScreen() {
 
   if (!authLoading && (!configured || !session)) {
     return <Redirect href="/(auth)/sign-in" />;
-  }
-
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
   }
 
   async function handleSave(playerId: string, input: PlayerInput) {
@@ -769,22 +753,26 @@ export default function DepthChartScreen() {
                 ? 'Official depth order · not editable here'
                 : 'Varsity → JV → Fr/Soph at this position · pick a squad to reorder'}
       </Text>
-      {viewingSquadDepth && !squadDepthReady ? (
-        <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />
-      ) : viewingSquadDepth ? (
+      {viewingSquadDepth ? (
         <>
           <DepthPositionList
-            players={orderedAtPosition}
-            canReorder={canReorder}
+            players={squadDepthReady ? orderedAtPosition : []}
+            canReorder={canReorder && squadDepthReady}
             starterCount={starterCount}
-            starterElsewhereByPlayer={starterElsewhereByPlayer}
+            starterElsewhereByPlayer={
+              squadDepthReady ? starterElsewhereByPlayer : {}
+            }
             compact={compactLists}
             onPressPlayer={
-              canReorder && compactLists ? setEditing : undefined
+              canReorder && squadDepthReady && compactLists
+                ? setEditing
+                : undefined
             }
             onSave={handleSave}
             onAssignSquad={
-              canReorder && !compactLists ? handleAssignSquad : undefined
+              canReorder && squadDepthReady && !compactLists
+                ? handleAssignSquad
+                : undefined
             }
             onMove={handleMove}
           />
@@ -806,11 +794,12 @@ export default function DepthChartScreen() {
               : allViews.positionSections
           }
           sectionsPending={
-            isMasterView
+            loading ||
+            (isMasterView
               ? masterClaimsLoading
-              : !depthReady && players.length > 0
+              : !depthReady && players.length > 0)
           }
-          emptyPlayers={middleCandidates.length === 0}
+          emptyPlayers={!loading && middleCandidates.length === 0}
           onPressPlayer={setEditing}
         />
       ) : (
@@ -825,9 +814,10 @@ export default function DepthChartScreen() {
               : allViews.positionSections
           }
           sectionsPending={
-            isMasterView
+            loading ||
+            (isMasterView
               ? masterClaimsLoading
-              : !depthReady && players.length > 0
+              : !depthReady && players.length > 0)
           }
         />
       )}
@@ -835,7 +825,7 @@ export default function DepthChartScreen() {
   );
 
   const benchBlock =
-    viewingSquadDepth && squadDepthReady ? (
+    viewingSquadDepth ? (
       <View
         style={[styles.benchBlock, showingOtherMaster && styles.readOnlyPanel]}
       >
@@ -852,26 +842,34 @@ export default function DepthChartScreen() {
             : 'Read-only bench order'}
         </Text>
         <DepthPositionList
-          players={subs}
-          canReorder={canReorder}
+          players={squadDepthReady ? subs : []}
+          canReorder={canReorder && squadDepthReady}
           starterCount={0}
           rankStart={12}
           showRole={false}
-          emptyText="No substitutes for this squad."
+          emptyText={
+            squadDepthReady
+              ? 'No substitutes for this squad.'
+              : 'Loading substitutes…'
+          }
           compact={compactLists}
           onPressPlayer={
-            canReorder && compactLists ? setEditing : undefined
+            canReorder && squadDepthReady && compactLists
+              ? setEditing
+              : undefined
           }
           onSave={handleSave}
           onAssignSquad={
-            canReorder && !compactLists ? handleAssignSquad : undefined
+            canReorder && squadDepthReady && !compactLists
+              ? handleAssignSquad
+              : undefined
           }
           onMove={handleMoveSub}
         />
       </View>
     ) : null;
 
-  const rightXi = showSideXi && squadDepthReady ? (
+  const rightXi = showSideXi ? (
     <View
       style={[styles.rightCol, showingOtherMaster && styles.readOnlyPanel]}
     >
@@ -893,12 +891,12 @@ export default function DepthChartScreen() {
       >
         <Text style={styles.sectionLabel}>Starters (XI)</Text>
         <PlayerTable
-          players={starters}
+          players={squadDepthReady ? starters : []}
           onSave={handleSave}
           showRankColumns={false}
           showDelete={false}
           showRoleColumn={false}
-          sections={starterSection}
+          sections={squadDepthReady ? starterSection : undefined}
         />
         <View style={styles.subsBreak}>
           <View style={styles.subsLine} />
@@ -909,14 +907,20 @@ export default function DepthChartScreen() {
           {canReorder ? 'Use ↑ ↓ to set bench order' : 'Read-only bench order'}
         </Text>
         <DepthPositionList
-          players={subs}
-          canReorder={canReorder}
+          players={squadDepthReady ? subs : []}
+          canReorder={canReorder && squadDepthReady}
           starterCount={0}
           rankStart={12}
           showRole={false}
-          emptyText="No substitutes for this squad."
+          emptyText={
+            squadDepthReady
+              ? 'No substitutes for this squad.'
+              : 'Loading substitutes…'
+          }
           onSave={handleSave}
-          onAssignSquad={canReorder ? handleAssignSquad : undefined}
+          onAssignSquad={
+            canReorder && squadDepthReady ? handleAssignSquad : undefined
+          }
           onMove={handleMoveSub}
         />
       </ScrollView>

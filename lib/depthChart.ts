@@ -245,6 +245,53 @@ async function writeDepthSortOrders(entries: DepthChartEntry[]): Promise<void> {
   if (finalErr) throw finalErr;
 }
 
+/**
+ * Persist an absolute player order for one position group (offline replay).
+ * Unknown ids are ignored; missing rows are left unchanged at the end.
+ */
+export async function replaceDepthOrderForPosition(params: {
+  rosterId: string;
+  squadTeam: SquadTeam;
+  workspaceId: string;
+  positionNumber: number;
+  orderedPlayerIds: string[];
+}): Promise<DepthChartEntry[]> {
+  const canonical = getDepthCanonicalPosition(params.positionNumber);
+  const entries = (
+    await listDepthChartEntries(
+      params.rosterId,
+      params.squadTeam,
+      params.workspaceId,
+      canonical
+    )
+  ).filter((e) => e.position_number === canonical);
+
+  const byPlayer = new Map(entries.map((e) => [e.player_id, e]));
+  const ordered: DepthChartEntry[] = [];
+  const seen = new Set<string>();
+  for (const id of params.orderedPlayerIds) {
+    const row = byPlayer.get(id);
+    if (!row || seen.has(id)) continue;
+    seen.add(id);
+    ordered.push(row);
+  }
+  for (const row of entries.sort((a, b) => a.sort_order - b.sort_order)) {
+    if (seen.has(row.player_id)) continue;
+    ordered.push(row);
+  }
+  await writeDepthSortOrders(ordered);
+  return listDepthChartEntries(
+    params.rosterId,
+    params.squadTeam,
+    params.workspaceId,
+    canonical
+  ).then((rows) =>
+    rows
+      .filter((e) => e.position_number === canonical)
+      .sort((a, b) => a.sort_order - b.sort_order)
+  );
+}
+
 function uniqueOrderedEntries(entries: DepthChartEntry[]): DepthChartEntry[] {
   const sorted = [...entries].sort((a, b) => a.sort_order - b.sort_order);
   const seen = new Set<string>();

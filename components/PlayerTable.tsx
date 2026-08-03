@@ -200,10 +200,6 @@ export function PlayerTable({
     sortAsc
   );
 
-  if (sectionsPending && (!filteredSections || filteredSections.length === 0)) {
-    return null;
-  }
-
   const hasRows = filteredSections
     ? filteredSections.length > 0
     : flatSorted.length > 0;
@@ -212,9 +208,11 @@ export function PlayerTable({
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyText}>
-          {players.length === 0
-            ? 'No players yet. Add one or import a spreadsheet.'
-            : 'No players match this filter.'}
+          {sectionsPending
+            ? 'Loading…'
+            : players.length === 0
+              ? 'No players yet. Add one or import a spreadsheet.'
+              : 'No players match this filter.'}
         </Text>
       </View>
     );

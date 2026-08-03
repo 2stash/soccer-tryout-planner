@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -232,14 +231,6 @@ export default function RostersScreen() {
     return <Redirect href="/(auth)/sign-in" />;
   }
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
   function tabCount(key: ViewKey) {
     if (key === 'pools') {
       return availablePlayers.length + unavailablePlayers.length;
@@ -393,9 +384,7 @@ export default function RostersScreen() {
               {renderPoolList('available', availablePlayers)}
               {renderPoolList('unavailable', unavailablePlayers)}
             </View>
-          ) : !squadDepthReady ? (
-            <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
-          ) : squadPlayers.length === 0 ? (
+          ) : !loading && squadDepthReady && squadPlayers.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyTitle}>No players on {teamLabel}</Text>
               <Text style={styles.emptyText}>
