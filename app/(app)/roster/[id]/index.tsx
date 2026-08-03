@@ -12,6 +12,8 @@ import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
 import { playersInRankPool } from '@/lib/assignPools';
+import { alertRequiresOnline } from '@/lib/offline/gate';
+import { useOffline } from '@/lib/offline/OfflineContext';
 import {
   filterAvailableByGrade,
   orderAvailablePlayers,
@@ -115,6 +117,7 @@ export default function RosterPlayersScreen() {
   const { session, loading: authLoading, configured } = useAuth();
   const { isPhone, isCompact } = useLayout();
   const { workspaceKind, isAdminLiveMode } = useActiveRole();
+  const { isOnline } = useOffline();
   const {
     officialPlayers,
     depthForMaster,
@@ -495,8 +498,14 @@ export default function RosterPlayersScreen() {
               placeholderTextColor={colors.muted}
             />
             <Pressable
-              style={styles.primaryBtn}
-              onPress={() => router.push(`/roster/${rosterId}/add`)}
+              style={[styles.primaryBtn, !isOnline && styles.btnDisabled]}
+              onPress={() => {
+                if (!isOnline) {
+                  alertRequiresOnline('Adding players');
+                  return;
+                }
+                router.push(`/roster/${rosterId}/add`);
+              }}
             >
               <Text style={styles.primaryText}>Add</Text>
             </Pressable>
@@ -510,8 +519,14 @@ export default function RosterPlayersScreen() {
             ) : (
               <>
                 <Pressable
-                  style={styles.secondaryBtn}
-                  onPress={() => router.push(`/roster/${rosterId}/import`)}
+                  style={[styles.secondaryBtn, !isOnline && styles.btnDisabled]}
+                  onPress={() => {
+                    if (!isOnline) {
+                      alertRequiresOnline('Import');
+                      return;
+                    }
+                    router.push(`/roster/${rosterId}/import`);
+                  }}
                 >
                   <Text style={styles.secondaryText}>Import</Text>
                 </Pressable>
@@ -546,8 +561,12 @@ export default function RosterPlayersScreen() {
           {isCompact && moreOpen ? (
             <View style={styles.morePanel}>
               <Pressable
-                style={styles.moreRow}
+                style={[styles.moreRow, !isOnline && styles.btnDisabled]}
                 onPress={() => {
+                  if (!isOnline) {
+                    alertRequiresOnline('Import');
+                    return;
+                  }
                   setMoreOpen(false);
                   router.push(`/roster/${rosterId}/import`);
                 }}

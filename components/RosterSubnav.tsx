@@ -3,6 +3,7 @@ import { router, usePathname } from 'expo-router';
 import { RoleSwitcher } from '@/components/RoleSwitcher';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
+import { useOffline } from '@/lib/offline/OfflineContext';
 import { colors } from '@/constants/theme';
 
 type Props = {
@@ -21,6 +22,14 @@ export function RosterSubnav({ rosterId }: Props) {
   const pathname = usePathname();
   const { user, signOut } = useAuth();
   const { isAdmin, isAdminLiveMode } = useActiveRole();
+  const {
+    isOnline,
+    isSyncing,
+    pendingCount,
+    syncError,
+    offlineReady,
+    retrySync,
+  } = useOffline();
   const onAssign = pathname.includes('/assign');
   const onPlanner = pathname.includes('/planner');
   const onDepth = pathname.includes('/depth');
@@ -114,6 +123,39 @@ export function RosterSubnav({ rosterId }: Props) {
           </View>
         </View>
       </View>
+      {!isOnline ? (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            {offlineReady
+              ? pendingCount > 0
+                ? `Offline — ${pendingCount} change${pendingCount === 1 ? '' : 's'} pending`
+                : 'Offline — editing saved on this device'
+              : 'Offline — connect once to use this roster offline'}
+          </Text>
+        </View>
+      ) : null}
+      {isOnline && isSyncing ? (
+        <View style={styles.syncBanner}>
+          <Text style={styles.offlineBannerText}>
+            Syncing{pendingCount > 0 ? ` (${pendingCount} left)` : '…'}
+          </Text>
+        </View>
+      ) : null}
+      {isOnline && !isSyncing && pendingCount > 0 && !syncError ? (
+        <Pressable style={styles.syncBanner} onPress={retrySync}>
+          <Text style={styles.offlineBannerText}>
+            {pendingCount} change{pendingCount === 1 ? '' : 's'} waiting to
+            sync. Tap to sync now.
+          </Text>
+        </Pressable>
+      ) : null}
+      {isOnline && syncError ? (
+        <Pressable style={styles.syncErrorBanner} onPress={retrySync}>
+          <Text style={styles.offlineBannerText}>
+            Sync failed: {syncError}. Tap to retry.
+          </Text>
+        </Pressable>
+      ) : null}
       {isAdminLiveMode ? (
         <View style={[styles.liveBanner, styles.liveBannerAssign]}>
           <Text style={styles.liveBannerText}>
@@ -151,6 +193,38 @@ const styles = StyleSheet.create({
     borderTopColor: '#fca5a5',
   },
   liveBannerText: {
+    width: '100%',
+    maxWidth: 960,
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
+  },
+  offlineBanner: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: '#e2e8f0',
+    borderTopWidth: 1,
+    borderTopColor: '#cbd5e1',
+    alignItems: 'center',
+  },
+  syncBanner: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: '#dbeafe',
+    borderTopWidth: 1,
+    borderTopColor: '#93c5fd',
+    alignItems: 'center',
+  },
+  syncErrorBanner: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: colors.dangerBg,
+    borderTopWidth: 1,
+    borderTopColor: '#fca5a5',
+    alignItems: 'center',
+  },
+  offlineBannerText: {
     width: '100%',
     maxWidth: 960,
     color: colors.text,

@@ -16,6 +16,7 @@ import {
   fetchMasterClaims,
   isGloballyUnclaimed,
   isMasterKind,
+  masterKindForSquad,
   masterKindShortLabel,
   masterWorkspaces,
   MASTER_KINDS,
@@ -24,11 +25,25 @@ import {
   type MasterKind,
 } from '@/lib/masterConflicts';
 import { listDepthChartEntries } from '@/lib/depthChart';
+import { useOffline } from '@/lib/offline/OfflineContext';
 import { fetchPlayersByIds } from '@/lib/players';
 import type { SquadDepthCache } from '@/lib/squadSections';
 import { listSubOrderEntries } from '@/lib/subOrder';
 import { supabase } from '@/lib/supabase';
-import type { Player, SquadTeam, Workspace } from '@/lib/types';
+import type {
+  Player,
+  PlayerAssignment,
+  SquadTeam,
+  Workspace,
+} from '@/lib/types';
+import { isSquadTeam, UNAVAILABLE_POOL } from '@/lib/types';
+import { useForegroundRefresh } from '@/lib/useForegroundRefresh';
+
+export type MasterConflictSnapshotSlice = {
+  claimsEntries: [string, MasterClaim[]][];
+  claimedPlayers: Player[];
+  depthByKind: Partial<Record<MasterKind, SquadDepthCache>>;
+};
 
 type MasterConflictValue = {
   /** Short labels like "JV", "Varsity" for conflict chips on own team. */
@@ -58,6 +73,21 @@ type MasterConflictValue = {
   /** Increments after each successful claims/depth refresh (incl. realtime). */
   claimsRevision: number;
   refresh: () => Promise<void>;
+  /** Export claims/depth for offline snapshot. */
+  exportSnapshotSlice: () => MasterConflictSnapshotSlice;
+  /** Restore claims/depth from offline snapshot. */
+  hydrateFromSnapshot: (slice: MasterConflictSnapshotSlice) => void;
+  /** Optimistic Live assign while offline (single-claim LWW). */
+  applyOfflineAssign: (
+    playerId: string,
+    team: PlayerAssignment | null,
+    player?: Player | null
+  ) => void;
+  /** Optimistic Live remove-from-one-team while offline. */
+  applyOfflineRemoveFromTeam: (
+    playerId: string,
+    squadTeam: SquadTeam
+  ) => void;
 };
 
 const MasterConflictContext = createContext<MasterConflictValue | null>(null);
@@ -70,6 +100,7 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
     loading: roleLoading,
     isAdminLiveMode,
   } = useActiveRole();
+  const { isOnline } = useOffline();
   const [claimsByPlayer, setClaimsByPlayer] = useState<
     Map<string, MasterClaim[]>
   >(new Map());
@@ -87,8 +118,14 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
     .sort()
     .join(',');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isOnlineRef = useRef(isOnline);
+  isOnlineRef.current = isOnline;
 
   const refresh = useCallback(async () => {
+    if (!isOnlineRef.current) {
+      setLoading(false);
+      return;
+    }
     if (masters.length === 0) {
       setClaimsByPlayer(new Map());
       setClaimedPlayersById(new Map());
@@ -135,17 +172,33 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (roleLoading) return;
+    // Don't refetch/clear on connectivity flips — offline keeps last claims.
+    if (!isOnlineRef.current) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     void refresh();
   }, [roleLoading, masterIdsKey, refresh]);
 
+  useForegroundRefresh(
+    Boolean(isOnline && masters.length > 0),
+    () => {
+      if (!isOnlineRef.current) return;
+      void refresh();
+    },
+    12_000
+  );
+
+  const [realtimeEpoch, setRealtimeEpoch] = useState(0);
   useEffect(() => {
-    if (masters.length === 0) return;
+    if (!isOnline || masters.length === 0) return;
 
     const topic = `master-conflicts:${masterIdsKey}:${Date.now()}`;
     let channel = supabase.channel(topic);
 
     const scheduleRefresh = () => {
+      if (!isOnlineRef.current) return;
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         void refresh();
@@ -186,13 +239,91 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
         );
     }
 
-    channel.subscribe();
+    channel.subscribe((status) => {
+      // Do not resubscribe on CLOSED — that fires on intentional teardown too.
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        setRealtimeEpoch((n) => n + 1);
+      }
+    });
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       void supabase.removeChannel(channel);
     };
-  }, [masterIdsKey, masters, refresh]);
+  }, [masterIdsKey, masters, refresh, isOnline, realtimeEpoch]);
+
+  const exportSnapshotSlice = useCallback((): MasterConflictSnapshotSlice => {
+    return {
+      claimsEntries: [...claimsByPlayer.entries()],
+      claimedPlayers: [...claimedPlayersById.values()],
+      depthByKind,
+    };
+  }, [claimsByPlayer, claimedPlayersById, depthByKind]);
+
+  const hydrateFromSnapshot = useCallback(
+    (slice: MasterConflictSnapshotSlice) => {
+      setClaimsByPlayer(new Map(slice.claimsEntries));
+      setClaimedPlayersById(
+        new Map(slice.claimedPlayers.map((p) => [p.id, p]))
+      );
+      setDepthByKind(slice.depthByKind ?? {});
+      setClaimsRevision((n) => n + 1);
+      setLoading(false);
+    },
+    []
+  );
+
+  const applyOfflineAssign = useCallback(
+    (
+      playerId: string,
+      team: PlayerAssignment | null,
+      player?: Player | null
+    ) => {
+      setClaimsByPlayer((prev) => {
+        const next = new Map(prev);
+        if (team == null || team === UNAVAILABLE_POOL || !isSquadTeam(team)) {
+          next.delete(playerId);
+          return next;
+        }
+        const kind = masterKindForSquad(team);
+        const master = masters.find((m) => m.kind === kind);
+        if (!master) return prev;
+        next.set(playerId, [
+          {
+            kind,
+            workspaceId: master.id,
+            squadTeam: team,
+          },
+        ]);
+        return next;
+      });
+      if (player) {
+        setClaimedPlayersById((prev) => {
+          const next = new Map(prev);
+          next.set(playerId, { ...player, squad_team: team });
+          return next;
+        });
+      }
+      setClaimsRevision((n) => n + 1);
+    },
+    [masters]
+  );
+
+  const applyOfflineRemoveFromTeam = useCallback(
+    (playerId: string, squadTeam: SquadTeam) => {
+      const kind = masterKindForSquad(squadTeam);
+      setClaimsByPlayer((prev) => {
+        const list = prev.get(playerId) ?? [];
+        const remaining = list.filter((c) => c.kind !== kind);
+        const next = new Map(prev);
+        if (remaining.length === 0) next.delete(playerId);
+        else next.set(playerId, remaining);
+        return next;
+      });
+      setClaimsRevision((n) => n + 1);
+    },
+    []
+  );
 
   const labelsFor = useCallback(
     (playerId: string) => {
@@ -285,6 +416,10 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
       loading,
       claimsRevision,
       refresh,
+      exportSnapshotSlice,
+      hydrateFromSnapshot,
+      applyOfflineAssign,
+      applyOfflineRemoveFromTeam,
     }),
     [
       labelsFor,
@@ -300,6 +435,10 @@ export function MasterConflictProvider({ children }: { children: ReactNode }) {
       loading,
       claimsRevision,
       refresh,
+      exportSnapshotSlice,
+      hydrateFromSnapshot,
+      applyOfflineAssign,
+      applyOfflineRemoveFromTeam,
     ]
   );
 

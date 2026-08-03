@@ -9,7 +9,6 @@ import {
 } from 'react-native';
 import { confirmAction } from '@/lib/confirm';
 import {
-  adminLiveRemoveFromTeam,
   adminLiveSetPoolRanks,
   buildLiveRosterViews,
   fetchLiveMasterState,
@@ -89,9 +88,8 @@ function applyRankPlan(list: Player[], plan: AvailableRankPlan[]): Player[] {
 
 export function AdminLiveAssign() {
   const { width, isPhone, isCompact } = useLayout();
-  const { workspaces, rosterId } = useActiveRole();
+  const { workspaces } = useActiveRole();
   const {
-    refresh: refreshClaims,
     claimsRevision,
     claimsByPlayer,
     officialPlayers,
@@ -103,6 +101,7 @@ export function AdminLiveAssign() {
     players,
     loading: playersLoading,
     assignSquad,
+    removeFromLiveTeam,
   } = useRosterData();
 
   const [poolState, setPoolState] = useState<LiveMasterState | null>(null);
@@ -246,11 +245,6 @@ export function AdminLiveAssign() {
     [unavailablePlayers]
   );
 
-  async function refreshAll() {
-    await refreshClaims();
-    await reloadPools();
-  }
-
   async function assign(player: Player, team: PlayerAssignment | null) {
     if (masters.length === 0) {
       setLocalError('Master workspaces not loaded yet.');
@@ -278,15 +272,8 @@ export function AdminLiveAssign() {
     setBusyId(player.id);
     setLocalError(null);
     try {
-      await adminLiveRemoveFromTeam({
-        rosterId,
-        masters,
-        playerId: player.id,
-        squadTeam: team,
-        players,
-        claimsByPlayer,
-      });
-      await refreshAll();
+      await removeFromLiveTeam(player.id, team);
+      await reloadPools();
     } catch (e) {
       setLocalError(
         e instanceof Error ? e.message : 'Failed to remove from team'

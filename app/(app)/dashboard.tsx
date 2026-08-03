@@ -11,6 +11,8 @@ import {
 import { Redirect, router, Stack, useFocusEffect } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
 import { useLayout } from '@/lib/layout';
+import { alertRequiresOnline } from '@/lib/offline/gate';
+import { useIsOnline } from '@/lib/offline/connectivity';
 import { createRoster } from '@/lib/rosters';
 import { listMyMemberships, roleLabel } from '@/lib/rosterMembers';
 import type { RosterMembership } from '@/lib/types';
@@ -19,6 +21,7 @@ import { colors, layout } from '@/constants/theme';
 export default function DashboardScreen() {
   const { user, session, loading, signOut, configured } = useAuth();
   const { isPhone, isCompact } = useLayout();
+  const isOnline = useIsOnline();
   const [memberships, setMemberships] = useState<RosterMembership[]>([]);
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +66,10 @@ export default function DashboardScreen() {
   async function handleCreate() {
     if (!user || !name.trim()) {
       setError('Enter a team / tryout name.');
+      return;
+    }
+    if (!isOnline) {
+      alertRequiresOnline('Creating a team');
       return;
     }
     setBusy(true);

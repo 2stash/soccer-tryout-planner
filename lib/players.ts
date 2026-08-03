@@ -430,7 +430,8 @@ export async function fetchPlayersByIds(
 export function subscribeToPlayers(
   rosterId: string,
   workspaceId: string,
-  onChange: () => void
+  onChange: () => void,
+  onStatus?: (status: string) => void
 ): RealtimeChannel {
   const topic = `players:roster:${rosterId}:${workspaceId}:${Date.now()}-${Math.random()
     .toString(36)
@@ -458,7 +459,9 @@ export function subscribeToPlayers(
       },
       () => onChange()
     )
-    .subscribe();
+    .subscribe((status) => {
+      onStatus?.(status);
+    });
 }
 
 /**
@@ -468,7 +471,8 @@ export function subscribeToPlayers(
 export function subscribeToLiveMasterRoster(
   rosterId: string,
   masterWorkspaceIds: string[],
-  onChange: () => void
+  onChange: () => void,
+  onStatus?: (status: string) => void
 ): RealtimeChannel {
   const idsKey = [...masterWorkspaceIds].sort().join(',');
   const topic = `live-roster:${rosterId}:${idsKey}:${Date.now()}-${Math.random()
@@ -505,7 +509,9 @@ export function subscribeToLiveMasterRoster(
     }
   }
 
-  return channel.subscribe();
+  return channel.subscribe((status) => {
+    onStatus?.(status);
+  });
 }
 
 export async function unsubscribePlayers(channel: RealtimeChannel): Promise<void> {

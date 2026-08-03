@@ -3,6 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import { RosterSubnav } from '@/components/RosterSubnav';
 import { ActiveRoleProvider } from '@/lib/ActiveRoleContext';
 import { MasterConflictProvider } from '@/lib/MasterConflictContext';
+import { OfflineProvider } from '@/lib/offline/OfflineContext';
 import { RosterDataProvider } from '@/lib/RosterDataContext';
 import { colors } from '@/constants/theme';
 
@@ -24,28 +25,30 @@ export default function RosterLayout() {
 
   return (
     <ActiveRoleProvider rosterId={id}>
-      <MasterConflictProvider>
-        <RosterDataProvider rosterId={id}>
-          <View style={styles.wrap}>
-            <RosterSubnav rosterId={id} />
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: colors.bg },
-              }}
-            >
-              <Stack.Screen name="index" />
-              <Stack.Screen name="depth" />
-              <Stack.Screen name="rosters" />
-              <Stack.Screen name="assign" />
-              <Stack.Screen name="planner" />
-              <Stack.Screen name="add" />
-              <Stack.Screen name="import" />
-              <Stack.Screen name="team" />
-            </Stack>
-          </View>
-        </RosterDataProvider>
-      </MasterConflictProvider>
+      <OfflineProvider>
+        <MasterConflictProvider>
+          <RosterDataProvider rosterId={id}>
+            <View style={styles.wrap}>
+              <RosterSubnav rosterId={id} />
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.bg },
+                }}
+              >
+                <Stack.Screen name="index" />
+                <Stack.Screen name="depth" />
+                <Stack.Screen name="rosters" />
+                <Stack.Screen name="assign" />
+                <Stack.Screen name="planner" />
+                <Stack.Screen name="add" />
+                <Stack.Screen name="import" />
+                <Stack.Screen name="team" />
+              </Stack>
+            </View>
+          </RosterDataProvider>
+        </MasterConflictProvider>
+      </OfflineProvider>
     </ActiveRoleProvider>
   );
 }

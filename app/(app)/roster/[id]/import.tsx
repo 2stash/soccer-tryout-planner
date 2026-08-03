@@ -2,11 +2,13 @@ import { StyleSheet, Text, View } from 'react-native';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
 import { ImportSheet } from '@/components/ImportSheet';
+import { useOffline } from '@/lib/offline/OfflineContext';
 import { colors } from '@/constants/theme';
 
 export default function ImportPlayersScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { session, loading, configured } = useAuth();
+  const { isOnline } = useOffline();
 
   if (!loading && (!configured || !session)) {
     return <Redirect href="/(auth)/sign-in" />;
@@ -22,12 +24,19 @@ export default function ImportPlayersScreen() {
       <Text style={styles.sub}>
         Preview mapped columns, then confirm to insert players into this team.
       </Text>
-      <ImportSheet
-        rosterId={id}
-        onImported={() => {
-          router.replace(`/roster/${id}`);
-        }}
-      />
+      {!isOnline ? (
+        <Text style={styles.offlineNote}>
+          Import requires a network connection. Come back online to upload a
+          spreadsheet.
+        </Text>
+      ) : (
+        <ImportSheet
+          rosterId={id}
+          onImported={() => {
+            router.replace(`/roster/${id}`);
+          }}
+        />
+      )}
     </View>
   );
 }
@@ -47,5 +56,10 @@ const styles = StyleSheet.create({
   sub: {
     color: colors.muted,
     marginBottom: 8,
+  },
+  offlineNote: {
+    color: colors.danger,
+    fontWeight: '600',
+    marginTop: 8,
   },
 });

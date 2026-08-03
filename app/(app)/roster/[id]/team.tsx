@@ -11,6 +11,8 @@ import { Stack, useFocusEffect } from 'expo-router';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
 import { useLayout } from '@/lib/layout';
+import { alertRequiresOnline } from '@/lib/offline/gate';
+import { useOffline } from '@/lib/offline/OfflineContext';
 import {
   addRosterRole,
   listRosterMembers,
@@ -32,6 +34,7 @@ export default function TeamSettingsScreen() {
   const { user } = useAuth();
   const { isPhone } = useLayout();
   const { rosterId, isAdmin, roles: myRoles, refreshRoles } = useActiveRole();
+  const { isOnline } = useOffline();
   const [members, setMembers] = useState<RosterMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyRole, setBusyRole] = useState<RosterRole | null>(null);
@@ -63,6 +66,10 @@ export default function TeamSettingsScreen() {
 
   async function handleToggle(role: RosterRole) {
     if (!user || !isAdmin) return;
+    if (!isOnline) {
+      alertRequiresOnline('Team role changes');
+      return;
+    }
     setBusyRole(role);
     setError(null);
     try {

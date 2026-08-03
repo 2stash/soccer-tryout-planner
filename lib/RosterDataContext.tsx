@@ -29,6 +29,7 @@ import {
   unsubscribePlayers,
   updatePlayer,
 } from '@/lib/players';
+import { useForegroundRefresh } from '@/lib/useForegroundRefresh';
 import {
   moveAvailableInFilter,
   moveAvailableToBottom,
@@ -68,6 +69,7 @@ import {
 } from '@/lib/assignPools';
 import {
   adminLiveAssign,
+  adminLiveRemoveFromTeam,
   adminLiveSetPoolRanks,
   fetchLiveMasterState,
   flattenLivePlayers,
@@ -85,6 +87,9 @@ import {
   isAllowedMasterAssignment,
   ownSquadForWorkspace,
 } from '@/lib/masterWorkspace';
+import { useOffline } from '@/lib/offline/OfflineContext';
+import { loadRosterSnapshot, saveRosterSnapshot } from '@/lib/offline/snapshot';
+import type { OfflineOp, OfflineOpInput } from '@/lib/offline/types';
 import type {
   Player,
   PlayerAssignment,
@@ -162,6 +167,8 @@ type RosterDataValue = {
   }) => Promise<void>;
   /** Reset unpinned players in a ranked pool to class then name. */
   resetAvailableOrder: (pool?: RankPool) => Promise<void>;
+  /** Admin Live: remove from one master team (conflicts may remain). */
+  removeFromLiveTeam: (playerId: string, squadTeam: SquadTeam) => Promise<void>;
 };
 
 const RosterDataContext = createContext<RosterDataValue | null>(null);
@@ -225,8 +232,25 @@ export function RosterDataProvider({
     loading: roleLoading,
     isAdminLiveMode,
     workspaces,
+    adminEditMode,
   } = useActiveRole();
-  const { refresh: refreshMasterClaims } = useMasterConflicts();
+  const {
+    refresh: refreshMasterClaims,
+    exportSnapshotSlice,
+    hydrateFromSnapshot,
+    applyOfflineAssign,
+    applyOfflineRemoveFromTeam,
+  } = useMasterConflicts();
+  const {
+    isOnline,
+    shouldQueueWrites,
+    scope,
+    enqueue,
+    registerReplay,
+    registerDrainComplete,
+    setOfflineReady,
+    retrySync,
+  } = useOffline();
   const [roster, setRoster] = useState<Roster | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [depthCache, setDepthCache] = useState<DepthCacheMap>({});
@@ -252,8 +276,59 @@ export function RosterDataProvider({
   depthCacheRef.current = depthCache;
   const playersRef = useRef(players);
   playersRef.current = players;
+  const rosterRef = useRef(roster);
+  rosterRef.current = roster;
   /** Monotonic token so stale background starter writes can't overwrite newer swaps. */
   const starterSwapGenRef = useRef(0);
+  const replayingRef = useRef(false);
+  const shouldQueueRef = useRef(shouldQueueWrites);
+  shouldQueueRef.current = shouldQueueWrites;
+  const isOnlineRef = useRef(isOnline);
+  isOnlineRef.current = isOnline;
+  const refreshMasterClaimsRef = useRef(refreshMasterClaims);
+  refreshMasterClaimsRef.current = refreshMasterClaims;
+
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const exportSnapshotSliceRef = useRef(exportSnapshotSlice);
+  exportSnapshotSliceRef.current = exportSnapshotSlice;
+  const setOfflineReadyRef = useRef(setOfflineReady);
+  setOfflineReadyRef.current = setOfflineReady;
+  const hydrateFromSnapshotRef = useRef(hydrateFromSnapshot);
+  hydrateFromSnapshotRef.current = hydrateFromSnapshot;
+
+  const persistSnapshot = useCallback(async () => {
+    const s = scopeRef.current;
+    if (!s) return;
+    if (playersRef.current.length === 0 && !rosterRef.current) return;
+    const slice = exportSnapshotSliceRef.current();
+    await saveRosterSnapshot({
+      version: 1,
+      scope: s,
+      savedAt: Date.now(),
+      roster: rosterRef.current,
+      players: playersRef.current,
+      depthCache: depthCacheRef.current,
+      claimsEntries: slice.claimsEntries,
+      claimedPlayers: slice.claimedPlayers,
+      depthByKind: slice.depthByKind,
+    });
+    setOfflineReadyRef.current(true);
+  }, []);
+
+  const queueIfNeeded = useCallback(
+    async (op: OfflineOpInput) => {
+      if (replayingRef.current) return false;
+      // Prefer live connectivity ref — shouldQueue can lag one render behind.
+      const mustQueue =
+        !isOnlineRef.current || shouldQueueRef.current;
+      if (!mustQueue) return false;
+      await enqueue(op);
+      await persistSnapshot();
+      return true;
+    },
+    [enqueue, persistSnapshot]
+  );
 
   function workspaceIdForSquad(squad: SquadTeam): string | null {
     if (liveModeRef.current) {
@@ -429,6 +504,29 @@ export function RosterDataProvider({
   const refreshPlayersRef = useRef(refreshPlayers);
   refreshPlayersRef.current = refreshPlayers;
 
+  async function hydrateFromSnap(scopeToLoad: NonNullable<typeof scope>) {
+    const snap = await loadRosterSnapshot(scopeToLoad);
+    if (!snap) return false;
+    setRoster(snap.roster);
+    rosterRef.current = snap.roster;
+    setPlayers(snap.players);
+    playersRef.current = snap.players;
+    setDepthCache(snap.depthCache);
+    depthCacheRef.current = snap.depthCache;
+    membershipRef.current = membershipKey(snap.players);
+    setDepthReady(true);
+    hydrateFromSnapshotRef.current({
+      claimsEntries: snap.claimsEntries,
+      claimedPlayers: snap.claimedPlayers,
+      depthByKind: snap.depthByKind,
+    });
+    setOfflineReadyRef.current(true);
+    setError(null);
+    return true;
+  }
+
+  // Initial / workspace load only — do NOT depend on isOnline (airplane mode
+  // must not wipe in-memory roster and thrash the UI).
   useEffect(() => {
     let active = true;
     membershipRef.current = '';
@@ -442,10 +540,12 @@ export function RosterDataProvider({
       };
     }
 
-    if (!activeWorkspaceId) {
+    if (!activeWorkspaceId || !scope) {
       setLoading(false);
       setPlayers([]);
-      setError('No active workspace for this role.');
+      setError(
+        activeWorkspaceId ? null : 'No active workspace for this role.'
+      );
       return () => {
         active = false;
       };
@@ -453,10 +553,23 @@ export function RosterDataProvider({
 
     const workspaceId = activeWorkspaceId;
     const live = isAdminLiveMode;
+    const loadScope = scope;
 
     (async () => {
       setLoading(true);
       setError(null);
+
+      // Cold start while offline: restore snapshot. Online path preferred.
+      if (!isOnlineRef.current) {
+        const ok = await hydrateFromSnap(loadScope);
+        if (!ok && active) {
+          setError('Connect once online to use this roster offline.');
+          setOfflineReadyRef.current(false);
+        }
+        if (active) setLoading(false);
+        return;
+      }
+
       try {
         const r = await getRoster(rosterId);
         if (!active) return;
@@ -467,6 +580,7 @@ export function RosterDataProvider({
           return;
         }
         setRoster(r);
+        rosterRef.current = r;
         if (live) {
           const [base, liveState] = await Promise.all([
             listPlayers(rosterId, workspaceId),
@@ -487,8 +601,10 @@ export function RosterDataProvider({
           playersRef.current = data;
           await syncDepthForPlayers(data);
         }
+        if (active) await persistSnapshot();
       } catch (e) {
-        if (active) {
+        const ok = await hydrateFromSnap(loadScope);
+        if (!ok && active) {
           setError(e instanceof Error ? e.message : 'Failed to load roster');
         }
       } finally {
@@ -496,27 +612,8 @@ export function RosterDataProvider({
       }
     })();
 
-    const onRealtime = () => {
-      if (Date.now() < muteRealtimeUntilRef.current) return;
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        if (Date.now() < muteRealtimeUntilRef.current) return;
-        void refreshPlayersRef.current().catch((e) => {
-          setError(e instanceof Error ? e.message : 'Failed to refresh players');
-        });
-      }, 300);
-    };
-
-    const masterIds = masterWorkspaces(workspaces).map((w) => w.id);
-    const channel =
-      live && masterIds.length > 0
-        ? subscribeToLiveMasterRoster(rosterId, masterIds, onRealtime)
-        : subscribeToPlayers(rosterId, workspaceId, onRealtime);
-
     return () => {
       active = false;
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      void unsubscribePlayers(channel);
     };
   }, [
     rosterId,
@@ -525,16 +622,139 @@ export function RosterDataProvider({
     isAdminLiveMode,
     workspaces,
     syncDepthForPlayers,
+    // scope identity via workspace + mode (not the object itself)
+    adminEditMode,
+    persistSnapshot,
+  ]);
+
+  // Connectivity transitions: keep memory on offline. Do NOT soft-refresh from
+  // the server before the outbox drains — that raced sync and dropped writes.
+  useEffect(() => {
+    if (roleLoading || !scope) return;
+
+    if (!isOnline) {
+      if (playersRef.current.length > 0 || rosterRef.current) {
+        setError(null);
+        setOfflineReadyRef.current(true);
+        void persistSnapshot();
+        return;
+      }
+      void (async () => {
+        const ok = await hydrateFromSnap(scope);
+        if (!ok) {
+          setError('Connect once online to use this roster offline.');
+          setOfflineReadyRef.current(false);
+        }
+      })();
+      return;
+    }
+
+    // Back online: kick outbox drain (refresh happens in drainComplete).
+    setError(null);
+    retrySync();
+  }, [isOnline, roleLoading, scope, persistSnapshot, retrySync]);
+
+  const pullRemote = useCallback(() => {
+    if (!isOnlineRef.current) return;
+    if (Date.now() < muteRealtimeUntilRef.current) return;
+    void refreshMasterClaimsRef.current().catch(() => {
+      // Claims can lag; players refresh still helps.
+    });
+    void refreshPlayersRef.current({ forceSync: true }).catch((e) => {
+      setError(e instanceof Error ? e.message : 'Failed to refresh players');
+    });
+  }, []);
+
+  // Catch missed realtime (idle desktop tabs) via focus + light polling.
+  useForegroundRefresh(
+    Boolean(isOnline && !roleLoading && activeWorkspaceId),
+    pullRemote,
+    12_000
+  );
+
+  // Realtime only while online.
+  const [realtimeEpoch, setRealtimeEpoch] = useState(0);
+  useEffect(() => {
+    if (roleLoading || !isOnline || !activeWorkspaceId) return;
+
+    const onRealtime = () => {
+      if (!isOnlineRef.current) return;
+      if (Date.now() < muteRealtimeUntilRef.current) return;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        pullRemote();
+      }, 300);
+    };
+
+    const onStatus = (status: string) => {
+      // Do not resubscribe on CLOSED — that fires on intentional teardown too.
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        setRealtimeEpoch((n) => n + 1);
+      }
+    };
+
+    const live = isAdminLiveMode;
+    const masterIds = masterWorkspaces(workspaces).map((w) => w.id);
+    const channel =
+      live && masterIds.length > 0
+        ? subscribeToLiveMasterRoster(
+            rosterId,
+            masterIds,
+            onRealtime,
+            onStatus
+          )
+        : subscribeToPlayers(
+            rosterId,
+            activeWorkspaceId,
+            onRealtime,
+            onStatus
+          );
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      void unsubscribePlayers(channel);
+    };
+  }, [
+    rosterId,
+    activeWorkspaceId,
+    roleLoading,
+    isAdminLiveMode,
+    isOnline,
+    workspaces,
+    realtimeEpoch,
+    pullRemote,
   ]);
 
   const savePlayer = useCallback(
     async (playerId: string, input: PlayerInput) => {
-      const prev = players.find((p) => p.id === playerId);
+      const prev = playersRef.current.find((p) => p.id === playerId);
       const workspaceId = workspaceIdRef.current;
       if (!workspaceId) throw new Error('No active workspace');
+
+      if (await queueIfNeeded({ type: 'savePlayer', playerId, input })) {
+        const nextPositions = normalizePositions(input.positions);
+        const updated: Player = {
+          ...(prev as Player),
+          first_name: input.first_name,
+          last_name: input.last_name,
+          school_year: input.school_year,
+          positions: nextPositions,
+          position: formatPositionsShort(nextPositions),
+        };
+        const next = playersRef.current.map((p) =>
+          p.id === playerId ? updated : p
+        );
+        setPlayers(next);
+        playersRef.current = next;
+        return updated;
+      }
+
       const updated = await updatePlayer(playerId, input, workspaceId);
-      const next = players.map((p) => (p.id === playerId ? updated : p));
+      const next = playersRef.current.map((p) =>
+        p.id === playerId ? updated : p
+      );
       setPlayers(next);
+      playersRef.current = next;
       muteRealtimeBriefly();
       membershipRef.current = membershipKey(next);
 
@@ -582,16 +802,26 @@ export function RosterDataProvider({
           });
       }
 
+      void persistSnapshot();
       return updated;
     },
-    [players, rosterId]
+    [rosterId, queueIfNeeded, persistSnapshot]
   );
 
   const removePlayer = useCallback(
     async (player: Player) => {
+      if (await queueIfNeeded({ type: 'removePlayer', playerId: player.id })) {
+        const next = playersRef.current.filter((p) => p.id !== player.id);
+        setPlayers(next);
+        playersRef.current = next;
+        membershipRef.current = membershipKey(next);
+        return;
+      }
+
       await deletePlayer(player.id);
-      const next = players.filter((p) => p.id !== player.id);
+      const next = playersRef.current.filter((p) => p.id !== player.id);
       setPlayers(next);
+      playersRef.current = next;
       if (isSquadTeam(player.squad_team)) {
         const squadTeam = player.squad_team;
         const squadPlayers = next.filter((p) => p.squad_team === squadTeam);
@@ -613,15 +843,31 @@ export function RosterDataProvider({
         }
         membershipRef.current = membershipKey(next);
       }
+      void persistSnapshot();
     },
-    [players, rosterId]
+    [rosterId, queueIfNeeded, persistSnapshot]
   );
 
   const assignSquad = useCallback(
     async (playerId: string, team: PlayerAssignment | null) => {
-      const prev = players.find((p) => p.id === playerId);
+      const prev = playersRef.current.find((p) => p.id === playerId);
       const workspaceId = workspaceIdRef.current;
       if (!workspaceId) throw new Error('No active workspace');
+
+      if (await queueIfNeeded({ type: 'assignSquad', playerId, team })) {
+        const next = playersRef.current.map((p) =>
+          p.id === playerId
+            ? { ...p, squad_team: team, available_pinned: false }
+            : p
+        );
+        setPlayers(next);
+        playersRef.current = next;
+        membershipRef.current = membershipKey(next);
+        if (liveModeRef.current) {
+          applyOfflineAssign(playerId, team, prev ?? null);
+        }
+        return;
+      }
 
       if (liveModeRef.current) {
         const live = await fetchLiveMasterState(mastersRef.current);
@@ -630,13 +876,14 @@ export function RosterDataProvider({
           masters: mastersRef.current,
           playerId,
           target: team,
-          players,
+          players: playersRef.current,
           claimsByPlayer: live.claimsByPlayer,
         });
         muteRealtimeBriefly(4000);
         // Claims drive Assign / All Players team columns — refresh before UI reads.
         await refreshMasterClaims();
         await refreshLivePlayers({ forceSync: true });
+        void persistSnapshot();
         return;
       }
 
@@ -657,7 +904,9 @@ export function RosterDataProvider({
               workspaceId
             )
           : await setPlayerSquadTeam(playerId, team, workspaceId);
-      let next = players.map((p) => (p.id === playerId ? updated : p));
+      let next = playersRef.current.map((p) =>
+        p.id === playerId ? updated : p
+      );
       setPlayers(next);
       playersRef.current = next;
       muteRealtimeBriefly();
@@ -707,22 +956,50 @@ export function RosterDataProvider({
         muteRealtimeBriefly(4000);
         await setPlayerTeamRanks(planned, workspaceId);
       }
+      void persistSnapshot();
     },
-    [players, rosterId, refreshLivePlayers, refreshMasterClaims]
+    [
+      rosterId,
+      refreshLivePlayers,
+      refreshMasterClaims,
+      queueIfNeeded,
+      persistSnapshot,
+      applyOfflineAssign,
+    ]
   );
 
   const changePositions = useCallback(
     async (playerId: string, positions: number[]) => {
-      const prev = players.find((p) => p.id === playerId);
+      const prev = playersRef.current.find((p) => p.id === playerId);
       const workspaceId = workspaceIdRef.current;
       if (!workspaceId) throw new Error('No active workspace');
+
+      if (await queueIfNeeded({ type: 'changePositions', playerId, positions })) {
+        const nextPositions = normalizePositions(positions);
+        const next = playersRef.current.map((p) =>
+          p.id === playerId
+            ? {
+                ...p,
+                positions: nextPositions,
+                position: formatPositionsShort(nextPositions),
+              }
+            : p
+        );
+        setPlayers(next);
+        playersRef.current = next;
+        return;
+      }
+
       const updated = await setPlayerPositions(
         playerId,
         positions,
         workspaceId
       );
-      const next = players.map((p) => (p.id === playerId ? updated : p));
+      const next = playersRef.current.map((p) =>
+        p.id === playerId ? updated : p
+      );
       setPlayers(next);
+      playersRef.current = next;
       muteRealtimeBriefly();
       membershipRef.current = membershipKey(next);
 
@@ -764,8 +1041,9 @@ export function RosterDataProvider({
             );
           });
       }
+      void persistSnapshot();
     },
-    [players, rosterId]
+    [rosterId, queueIfNeeded, persistSnapshot]
   );
 
   const moveDepth = useCallback(
@@ -775,6 +1053,36 @@ export function RosterDataProvider({
       playerId: string;
       direction: 'up' | 'down';
     }) => {
+      if (await queueIfNeeded({ type: 'moveDepth', ...params })) {
+        const cache = depthCacheRef.current[params.squadTeam];
+        const canonical = getDepthCanonicalPosition(params.positionNumber);
+        const entries = [...(cache?.depthEntries ?? [])];
+        const atPos = entries
+          .filter((e) => e.position_number === canonical)
+          .sort((a, b) => a.sort_order - b.sort_order);
+        const idx = atPos.findIndex((e) => e.player_id === params.playerId);
+        const swapWith =
+          params.direction === 'up' ? idx - 1 : idx + 1;
+        if (idx >= 0 && swapWith >= 0 && swapWith < atPos.length) {
+          const a = atPos[idx];
+          const b = atPos[swapWith];
+          const nextEntries = entries.map((e) => {
+            if (e.id === a.id) return { ...e, sort_order: b.sort_order };
+            if (e.id === b.id) return { ...e, sort_order: a.sort_order };
+            return e;
+          });
+          setDepthCache((prev) => ({
+            ...prev,
+            [params.squadTeam]: {
+              depthEntries: nextEntries,
+              subEntries: prev[params.squadTeam]?.subEntries ?? [],
+            },
+          }));
+          return nextEntries;
+        }
+        return entries;
+      }
+
       const workspaceId = workspaceIdForSquad(params.squadTeam);
       if (!workspaceId) throw new Error('No active workspace');
       const entries = await moveDepthChartEntry({
@@ -796,9 +1104,10 @@ export function RosterDataProvider({
         });
       }
       await refreshSquadCache(params.squadTeam, squadPlayers);
+      void persistSnapshot();
       return entries;
     },
-    [rosterId, refreshSquadCache]
+    [rosterId, refreshSquadCache, queueIfNeeded, persistSnapshot]
   );
 
   const setStarter = useCallback(
@@ -1199,6 +1508,28 @@ export function RosterDataProvider({
         }
       };
 
+      // Offline / outbox: keep optimistic UI and sync on reconnect.
+      if (
+        await queueIfNeeded({
+          type: 'setStarter',
+          squadTeam: params.squadTeam,
+          positionNumber: params.positionNumber,
+          slotIndex: params.slotIndex,
+          playerId: incomingId,
+          outgoingPlayerId: outgoingId,
+          incomingSubIndex: params.incomingSubIndex ?? null,
+        })
+      ) {
+        if (liveModeRef.current) {
+          applyOfflineAssign(
+            incomingId,
+            params.squadTeam,
+            playersRef.current.find((p) => p.id === incomingId) ?? null
+          );
+        }
+        return optimisticCache.depthEntries;
+      }
+
       // Live mode: await persist so UI/other tabs don't race a depth reload.
       if (liveModeRef.current) {
         try {
@@ -1216,6 +1547,7 @@ export function RosterDataProvider({
           }
           throw e;
         }
+        void persistSnapshot();
         return (
           depthCacheRef.current[params.squadTeam]?.depthEntries ??
           optimisticCache.depthEntries
@@ -1223,19 +1555,30 @@ export function RosterDataProvider({
       }
 
       // Personal / coach: keep snappy background persist.
-      void persist().catch((e) => {
-        if (swapGen !== starterSwapGenRef.current) return;
-        setPlayers(workingBase);
-        playersRef.current = workingBase;
-        setDepthCache(priorDepthCacheSnapshot);
-        membershipRef.current = membershipKey(workingBase);
-        muteRealtimeBriefly(500);
-        setError(e instanceof Error ? e.message : 'Failed to update starter');
-      });
+      void persist()
+        .then(() => {
+          void persistSnapshot();
+        })
+        .catch((e) => {
+          if (swapGen !== starterSwapGenRef.current) return;
+          setPlayers(workingBase);
+          playersRef.current = workingBase;
+          setDepthCache(priorDepthCacheSnapshot);
+          membershipRef.current = membershipKey(workingBase);
+          muteRealtimeBriefly(500);
+          setError(e instanceof Error ? e.message : 'Failed to update starter');
+        });
 
       return optimisticCache.depthEntries;
     },
-    [rosterId, refreshLivePlayers, refreshMasterClaims]
+    [
+      rosterId,
+      refreshLivePlayers,
+      refreshMasterClaims,
+      queueIfNeeded,
+      persistSnapshot,
+      applyOfflineAssign,
+    ]
   );
 
   const moveSub = useCallback(
@@ -1244,6 +1587,32 @@ export function RosterDataProvider({
       playerId: string;
       direction: 'up' | 'down';
     }) => {
+      if (await queueIfNeeded({ type: 'moveSub', ...params })) {
+        const subs = [
+          ...(depthCacheRef.current[params.squadTeam]?.subEntries ?? []),
+        ].sort((a, b) => a.sort_order - b.sort_order);
+        const idx = subs.findIndex((e) => e.player_id === params.playerId);
+        const swapWith = params.direction === 'up' ? idx - 1 : idx + 1;
+        if (idx >= 0 && swapWith >= 0 && swapWith < subs.length) {
+          const a = subs[idx];
+          const b = subs[swapWith];
+          const nextSubs = subs.map((e) => {
+            if (e.id === a.id) return { ...e, sort_order: b.sort_order };
+            if (e.id === b.id) return { ...e, sort_order: a.sort_order };
+            return e;
+          });
+          setDepthCache((prev) => ({
+            ...prev,
+            [params.squadTeam]: {
+              depthEntries: prev[params.squadTeam]?.depthEntries ?? [],
+              subEntries: nextSubs,
+            },
+          }));
+          return nextSubs;
+        }
+        return subs;
+      }
+
       const workspaceId = workspaceIdForSquad(params.squadTeam);
       if (!workspaceId) throw new Error('No active workspace');
 
@@ -1289,9 +1658,10 @@ export function RosterDataProvider({
           subEntries: entries,
         },
       }));
+      void persistSnapshot();
       return entries;
     },
-    [rosterId]
+    [rosterId, queueIfNeeded, persistSnapshot]
   );
 
   const applyAvailablePlan = useCallback(async (planned: AvailableRankPlan[]) => {
@@ -1304,18 +1674,22 @@ export function RosterDataProvider({
         Boolean(current.available_pinned) !== Boolean(row.available_pinned)
       );
     });
-    setPlayers((prev) =>
-      prev.map((p) => {
-        const row = byId.get(p.id);
-        if (!row) return p;
-        return {
-          ...p,
-          team_rank: row.team_rank,
-          available_pinned: row.available_pinned,
-        };
-      })
-    );
+    const nextPlayers = playersRef.current.map((p) => {
+      const row = byId.get(p.id);
+      if (!row) return p;
+      return {
+        ...p,
+        team_rank: row.team_rank,
+        available_pinned: row.available_pinned,
+      };
+    });
+    setPlayers(nextPlayers);
+    playersRef.current = nextPlayers;
     if (dirty.length === 0) return;
+    // Offline / outbox: local ranks only; rank ops enqueue separately.
+    if (!replayingRef.current && shouldQueueRef.current) {
+      return;
+    }
     muteRealtimeBriefly(2000);
     if (liveModeRef.current) {
       await adminLiveSetPoolRanks({
@@ -1357,8 +1731,20 @@ export function RosterDataProvider({
       });
       if (!planned) return;
       await applyAvailablePlan(planned);
+      if (
+        await queueIfNeeded({
+          type: 'moveAvailable',
+          playerId: params.playerId,
+          direction: params.direction,
+          grade: params.grade,
+          pool: params.pool,
+        })
+      ) {
+        return;
+      }
+      void persistSnapshot();
     },
-    [applyAvailablePlan]
+    [applyAvailablePlan, queueIfNeeded, persistSnapshot]
   );
 
   const toggleAvailablePinAction = useCallback(
@@ -1376,8 +1762,19 @@ export function RosterDataProvider({
       });
       if (!planned) return;
       await applyAvailablePlan(planned);
+      if (
+        await queueIfNeeded({
+          type: 'toggleAvailablePin',
+          playerId: params.playerId,
+          grade: params.grade,
+          pool: params.pool,
+        })
+      ) {
+        return;
+      }
+      void persistSnapshot();
     },
-    [applyAvailablePlan]
+    [applyAvailablePlan, queueIfNeeded, persistSnapshot]
   );
 
   const moveAvailableToTopAction = useCallback(
@@ -1395,8 +1792,19 @@ export function RosterDataProvider({
       });
       if (!planned) return;
       await applyAvailablePlan(planned);
+      if (
+        await queueIfNeeded({
+          type: 'moveAvailableToTop',
+          playerId: params.playerId,
+          grade: params.grade,
+          pool: params.pool,
+        })
+      ) {
+        return;
+      }
+      void persistSnapshot();
     },
-    [applyAvailablePlan]
+    [applyAvailablePlan, queueIfNeeded, persistSnapshot]
   );
 
   const moveAvailableToBottomAction = useCallback(
@@ -1414,8 +1822,19 @@ export function RosterDataProvider({
       });
       if (!planned) return;
       await applyAvailablePlan(planned);
+      if (
+        await queueIfNeeded({
+          type: 'moveAvailableToBottom',
+          playerId: params.playerId,
+          grade: params.grade,
+          pool: params.pool,
+        })
+      ) {
+        return;
+      }
+      void persistSnapshot();
     },
-    [applyAvailablePlan]
+    [applyAvailablePlan, queueIfNeeded, persistSnapshot]
   );
 
   const resetAvailableOrder = useCallback(
@@ -1424,9 +1843,166 @@ export function RosterDataProvider({
       if (available.length === 0) return;
       const planned = resetAvailableDefaultOrder(available);
       await applyAvailablePlan(planned);
+      if (await queueIfNeeded({ type: 'resetAvailableOrder', pool })) {
+        return;
+      }
+      void persistSnapshot();
     },
-    [applyAvailablePlan]
+    [applyAvailablePlan, queueIfNeeded, persistSnapshot]
   );
+
+  const removeFromLiveTeam = useCallback(
+    async (playerId: string, squadTeam: SquadTeam) => {
+      if (
+        await queueIfNeeded({
+          type: 'adminLiveRemoveFromTeam',
+          playerId,
+          squadTeam,
+        })
+      ) {
+        applyOfflineRemoveFromTeam(playerId, squadTeam);
+        const next = playersRef.current.map((p) =>
+          p.id === playerId && p.squad_team === squadTeam
+            ? { ...p, squad_team: null, available_pinned: false }
+            : p
+        );
+        setPlayers(next);
+        playersRef.current = next;
+        return;
+      }
+
+      const live = await fetchLiveMasterState(mastersRef.current);
+      await adminLiveRemoveFromTeam({
+        rosterId,
+        masters: mastersRef.current,
+        playerId,
+        squadTeam,
+        players: playersRef.current,
+        claimsByPlayer: live.claimsByPlayer,
+      });
+      muteRealtimeBriefly(4000);
+      await refreshMasterClaims();
+      await refreshLivePlayers({ forceSync: true });
+      void persistSnapshot();
+    },
+    [
+      rosterId,
+      queueIfNeeded,
+      applyOfflineRemoveFromTeam,
+      refreshMasterClaims,
+      refreshLivePlayers,
+      persistSnapshot,
+    ]
+  );
+
+  const replayApiRef = useRef({
+    assignSquad,
+    savePlayer,
+    removePlayer,
+    changePositions,
+    moveDepth,
+    setStarter,
+    moveSub,
+    moveAvailable,
+    toggleAvailablePinAction,
+    moveAvailableToTopAction,
+    moveAvailableToBottomAction,
+    resetAvailableOrder,
+    removeFromLiveTeam,
+  });
+  replayApiRef.current = {
+    assignSquad,
+    savePlayer,
+    removePlayer,
+    changePositions,
+    moveDepth,
+    setStarter,
+    moveSub,
+    moveAvailable,
+    toggleAvailablePinAction,
+    moveAvailableToTopAction,
+    moveAvailableToBottomAction,
+    resetAvailableOrder,
+    removeFromLiveTeam,
+  };
+
+  const persistSnapshotRef = useRef(persistSnapshot);
+  persistSnapshotRef.current = persistSnapshot;
+
+  // Register outbox replay once for provider lifetime (handlers via refs).
+  useEffect(() => {
+    registerReplay(async (op: OfflineOp) => {
+      replayingRef.current = true;
+      // Force online write path even if React state still thinks we should queue.
+      const prevOnline = isOnlineRef.current;
+      const prevShouldQueue = shouldQueueRef.current;
+      isOnlineRef.current = true;
+      shouldQueueRef.current = false;
+      const api = replayApiRef.current;
+      try {
+        switch (op.type) {
+          case 'assignSquad':
+            await api.assignSquad(op.playerId, op.team);
+            break;
+          case 'savePlayer':
+            await api.savePlayer(op.playerId, op.input);
+            break;
+          case 'removePlayer': {
+            const player = playersRef.current.find((p) => p.id === op.playerId);
+            if (player) await api.removePlayer(player);
+            break;
+          }
+          case 'changePositions':
+            await api.changePositions(op.playerId, op.positions);
+            break;
+          case 'moveDepth':
+            await api.moveDepth(op);
+            break;
+          case 'setStarter':
+            await api.setStarter(op);
+            break;
+          case 'moveSub':
+            await api.moveSub(op);
+            break;
+          case 'moveAvailable':
+            await api.moveAvailable(op);
+            break;
+          case 'toggleAvailablePin':
+            await api.toggleAvailablePinAction(op);
+            break;
+          case 'moveAvailableToTop':
+            await api.moveAvailableToTopAction(op);
+            break;
+          case 'moveAvailableToBottom':
+            await api.moveAvailableToBottomAction(op);
+            break;
+          case 'resetAvailableOrder':
+            await api.resetAvailableOrder(op.pool);
+            break;
+          case 'adminLiveRemoveFromTeam':
+            await api.removeFromLiveTeam(op.playerId, op.squadTeam);
+            break;
+          default:
+            break;
+        }
+      } finally {
+        isOnlineRef.current = prevOnline;
+        shouldQueueRef.current = prevShouldQueue;
+        replayingRef.current = false;
+      }
+    });
+    registerDrainComplete(async () => {
+      muteRealtimeBriefly(4000);
+      await refreshMasterClaimsRef.current();
+      await refreshPlayersRef.current({ forceSync: true });
+      await persistSnapshotRef.current();
+    });
+    retrySync();
+    return () => {
+      registerReplay(null);
+      registerDrainComplete(null);
+    };
+  }, [registerReplay, registerDrainComplete, retrySync]);
 
   const value = useMemo<RosterDataValue>(
     () => ({
@@ -1451,6 +2027,7 @@ export function RosterDataProvider({
       moveAvailableToTop: moveAvailableToTopAction,
       moveAvailableToBottom: moveAvailableToBottomAction,
       resetAvailableOrder,
+      removeFromLiveTeam,
     }),
     [
       rosterId,
@@ -1474,6 +2051,7 @@ export function RosterDataProvider({
       moveAvailableToTopAction,
       moveAvailableToBottomAction,
       resetAvailableOrder,
+      removeFromLiveTeam,
     ]
   );
 
