@@ -111,92 +111,135 @@ export function PlayerEditSheet({
   return (
     <Modal
       visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
+      transparent
+      animationType="fade"
       onRequestClose={onClose}
     >
-      <View style={styles.sheet}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Edit player</Text>
-          <Pressable onPress={onClose} hitSlop={12}>
-            <Text style={styles.close}>Close</Text>
-          </Pressable>
-        </View>
-
-        <ScrollView
-          contentContainerStyle={styles.body}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.field}>
-            <Text style={styles.label}>First name</Text>
-            <TextInput
-              style={styles.input}
-              value={firstName}
-              onChangeText={setFirstName}
-              placeholder="First"
-              placeholderTextColor={colors.muted}
-            />
-          </View>
-          <View style={styles.field}>
-            <Text style={styles.label}>Last name</Text>
-            <TextInput
-              style={styles.input}
-              value={lastName}
-              onChangeText={setLastName}
-              placeholder="Last"
-              placeholderTextColor={colors.muted}
-            />
-          </View>
-          <View style={styles.field}>
-            <Text style={styles.label}>Year</Text>
-            <YearSelect value={schoolYear} onChange={setSchoolYear} />
-          </View>
-          <View style={styles.field}>
-            <Text style={styles.label}>Positions</Text>
-            <PositionSelect value={positions} onChange={setPositions} />
-          </View>
-          {onAssignSquad ? (
-            <View style={styles.field}>
-              <Text style={styles.label}>Team</Text>
-              <SquadSelect
-                value={current.squad_team}
+      <View style={styles.overlay}>
+        <Pressable
+          style={styles.backdrop}
+          onPress={busy ? undefined : onClose}
+          accessibilityLabel="Dismiss"
+        />
+        <View style={styles.card}>
+          <View style={styles.header}>
+            <Text style={styles.title} numberOfLines={1}>
+              Edit player
+            </Text>
+            {onDelete ? (
+              <Pressable
+                onPress={() => void handleDelete()}
+                hitSlop={12}
                 disabled={busy}
-                onChange={(team) => void handleAssign(team)}
+              >
+                <Text style={styles.deleteHeader}>
+                  {deleting ? 'Deleting…' : 'Delete player'}
+                </Text>
+              </Pressable>
+            ) : (
+              <Pressable onPress={onClose} hitSlop={12} disabled={busy}>
+                <Text style={styles.close}>Close</Text>
+              </Pressable>
+            )}
+          </View>
+
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.body}
+            keyboardShouldPersistTaps="handled"
+            bounces={false}
+          >
+            <View style={styles.field}>
+              <Text style={styles.label}>First name</Text>
+              <TextInput
+                style={styles.input}
+                value={firstName}
+                onChangeText={setFirstName}
+                placeholder="First"
+                placeholderTextColor={colors.muted}
               />
             </View>
-          ) : null}
+            <View style={styles.field}>
+              <Text style={styles.label}>Last name</Text>
+              <TextInput
+                style={styles.input}
+                value={lastName}
+                onChangeText={setLastName}
+                placeholder="Last"
+                placeholderTextColor={colors.muted}
+              />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.label}>Year</Text>
+              <YearSelect value={schoolYear} onChange={setSchoolYear} />
+            </View>
+            <View style={styles.field}>
+              <Text style={styles.label}>Positions</Text>
+              <PositionSelect value={positions} onChange={setPositions} />
+            </View>
+            {onAssignSquad ? (
+              <View style={styles.field}>
+                <Text style={styles.label}>Team</Text>
+                <SquadSelect
+                  value={current.squad_team}
+                  disabled={busy}
+                  onChange={(team) => void handleAssign(team)}
+                />
+              </View>
+            ) : null}
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+          </ScrollView>
 
-          <Pressable
-            style={[styles.primaryBtn, busy && styles.disabled]}
-            disabled={busy}
-            onPress={() => void handleSave()}
-          >
-            <Text style={styles.primaryText}>{saving ? 'Saving…' : 'Save'}</Text>
-          </Pressable>
-
-          {onDelete ? (
+          <View style={styles.editActions}>
             <Pressable
-              style={[styles.deleteBtn, busy && styles.disabled]}
+              style={[styles.secondaryBtn, busy && styles.disabled]}
               disabled={busy}
-              onPress={() => void handleDelete()}
+              onPress={onClose}
             >
-              <Text style={styles.deleteText}>
-                {deleting ? 'Deleting…' : 'Delete player'}
+              <Text style={styles.secondaryBtnText}>Close</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryBtn, busy && styles.disabled]}
+              disabled={busy}
+              onPress={() => void handleSave()}
+            >
+              <Text style={styles.primaryText}>
+                {saving ? 'Saving…' : 'Save'}
               </Text>
             </Pressable>
-          ) : null}
-        </ScrollView>
+          </View>
+        </View>
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  sheet: {
+  overlay: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(21, 32, 43, 0.45)',
+  },
+  card: {
+    width: '100%',
+    maxWidth: 440,
+    maxHeight: '90%',
     backgroundColor: colors.bg,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+    shadowColor: '#15202b',
+    shadowOpacity: 0.22,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
   },
   header: {
     flexDirection: 'row',
@@ -207,8 +250,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
     backgroundColor: colors.surface,
+    gap: 12,
   },
   title: {
+    flex: 1,
     fontSize: 18,
     fontWeight: '800',
     color: colors.text,
@@ -216,12 +261,21 @@ const styles = StyleSheet.create({
   close: {
     color: colors.primary,
     fontWeight: '700',
-    fontSize: 16,
+    fontSize: 15,
+  },
+  deleteHeader: {
+    color: colors.danger,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  scroll: {
+    flexGrow: 0,
+    flexShrink: 1,
   },
   body: {
     padding: layout.pagePaddingCompact,
     gap: 14,
-    paddingBottom: 40,
+    paddingBottom: 16,
   },
   field: {
     gap: 6,
@@ -244,25 +298,40 @@ const styles = StyleSheet.create({
   error: {
     color: colors.danger,
   },
+  editActions: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: layout.pagePaddingCompact,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
+  },
   primaryBtn: {
+    flex: 1,
     backgroundColor: colors.primary,
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 4,
   },
   primaryText: {
     color: colors.primaryText,
     fontWeight: '700',
     fontSize: 16,
   },
-  deleteBtn: {
-    paddingVertical: 12,
+  secondaryBtn: {
+    flex: 1,
+    borderRadius: 8,
+    paddingVertical: 14,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
-  deleteText: {
-    color: colors.danger,
+  secondaryBtnText: {
+    color: colors.text,
     fontWeight: '700',
+    fontSize: 16,
   },
   disabled: {
     opacity: 0.55,

@@ -16,12 +16,11 @@ import {
 } from '@/lib/rosterMembers';
 import type { RosterRole, Workspace, WorkspaceKind } from '@/lib/types';
 import {
-  listRosterWorkspaces,
-  resolveWorkspaceForRole,
-  workspaceKindForRole,
-  workspaceKindLabel,
+  getSharedWorkspace,
+  listAndEnsureSharedWorkspace,
 } from '@/lib/workspaces';
 
+/** Kept for offline scope typing; always 'personal' after shared-workspace simplify. */
 export type AdminEditMode = 'personal' | 'live';
 
 type ActiveRoleValue = {
@@ -36,11 +35,12 @@ type ActiveRoleValue = {
   loading: boolean;
   error: string | null;
   isAdmin: boolean;
-  /** Admin-only: personal test overlay vs live head-coach masters. */
+  /** Stub: always 'personal' (shared workspace; no admin live overlay). */
   adminEditMode: AdminEditMode;
-  /** True when Admin is acting in Live Rosters mode. */
+  /** Stub: always false. */
   isAdminLiveMode: boolean;
   setActiveRole: (role: RosterRole) => void;
+  /** Stub: no-op. */
   setAdminEditMode: (mode: AdminEditMode) => void;
   refreshRoles: () => Promise<void>;
   roleLabel: (role: RosterRole) => string;
@@ -51,10 +51,6 @@ const ActiveRoleContext = createContext<ActiveRoleValue | null>(null);
 
 function storageKey(rosterId: string, userId: string) {
   return `activeRole:${rosterId}:${userId}`;
-}
-
-function adminModeStorageKey(rosterId: string, userId: string) {
-  return `adminEditMode:${rosterId}:${userId}`;
 }
 
 export function ActiveRoleProvider({
@@ -68,8 +64,6 @@ export function ActiveRoleProvider({
   const [roles, setRoles] = useState<RosterRole[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeRole, setActiveRoleState] = useState<RosterRole | null>(null);
-  const [adminEditMode, setAdminEditModeState] =
-    useState<AdminEditMode>('personal');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,7 +72,6 @@ export function ActiveRoleProvider({
       setRoles([]);
       setWorkspaces([]);
       setActiveRoleState(null);
-      setAdminEditModeState('personal');
       setLoading(false);
       return;
     }
@@ -87,48 +80,42 @@ export function ActiveRoleProvider({
     try {
       const [nextRoles, nextWorkspaces] = await Promise.all([
         listMyRolesOnRoster(rosterId, user.id),
-        listRosterWorkspaces(rosterId),
+        listAndEnsureSharedWorkspace(rosterId),
       ]);
       setRoles(nextRoles);
       setWorkspaces(nextWorkspaces);
 
-      const [stored, storedMode] = await Promise.all([
-        AsyncStorage.getItem(storageKey(rosterId, user.id)),
-        AsyncStorage.getItem(adminModeStorageKey(rosterId, user.id)),
-      ]);
+      const stored = await AsyncStorage.getItem(storageKey(rosterId, user.id));
       const storedRole = stored as RosterRole | null;
       if (storedRole && nextRoles.includes(storedRole)) {
         setActiveRoleState(storedRole);
       } else if (nextRoles.length > 0) {
         const fallback = pickDefaultActiveRole(nextRoles);
         setActiveRoleState(fallback);
-        await AsyncStorage.setItem(
-          storageKey(rosterId, user.id),
-          fallback
-        );
+        await AsyncStorage.setItem(storageKey(rosterId, user.id), fallback);
       } else {
         setActiveRoleState(null);
-      }
-
-      if (nextRoles.includes('admin') && storedMode === 'live') {
-        setAdminEditModeState('live');
-      } else {
-        setAdminEditModeState('personal');
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load roles');
       setRoles([]);
       setWorkspaces([]);
       setActiveRoleState(null);
-      setAdminEditModeState('personal');
     } finally {
       setLoading(false);
     }
   }, [rosterId, user]);
 
+  // Drop prior team's roles/workspaces immediately so network loads never use
+  // a stale workspace id while the new roster's roles are in flight.
   useEffect(() => {
+    setRoles([]);
+    setWorkspaces([]);
+    setActiveRoleState(null);
+    setError(null);
+    setLoading(true);
     void refreshRoles();
-  }, [refreshRoles]);
+  }, [rosterId, refreshRoles]);
 
   const setActiveRole = useCallback(
     (role: RosterRole) => {
@@ -139,68 +126,31 @@ export function ActiveRoleProvider({
     [roles, rosterId, user]
   );
 
-  const setAdminEditMode = useCallback(
-    (mode: AdminEditMode) => {
-      if (!user || !roles.includes('admin')) return;
-      setAdminEditModeState(mode);
-      void AsyncStorage.setItem(adminModeStorageKey(rosterId, user.id), mode);
-    },
-    [roles, rosterId, user]
+  const setAdminEditMode = useCallback((_mode: AdminEditMode) => {
+    // No-op: shared workspace has no personal/live admin modes.
+  }, []);
+
+  const activeWorkspace = useMemo(
+    () => getSharedWorkspace(workspaces),
+    [workspaces]
   );
 
-  const activeWorkspace = useMemo(() => {
-    if (!user || !activeRole) return null;
-    return resolveWorkspaceForRole({
-      workspaces,
-      role: activeRole,
-      userId: user.id,
-    });
-  }, [user, activeRole, workspaces]);
+  const workspaceKind: WorkspaceKind | null = activeWorkspace?.kind ?? null;
 
-  const workspaceKind = activeRole
-    ? workspaceKindForRole(activeRole)
-    : null;
-
-  const canEditActiveWorkspace = useMemo(() => {
-    if (!activeWorkspace || !user || !activeRole) return false;
-    if (activeWorkspace.kind === 'personal') {
-      return activeWorkspace.user_id === user.id;
-    }
-    // Masters: matching head coach or admin (admin can edit all masters).
-    if (roles.includes('admin')) return true;
-    if (
-      activeWorkspace.kind === 'master_varsity' &&
-      roles.includes('varsity_coach')
-    ) {
-      return true;
-    }
-    if (activeWorkspace.kind === 'master_jv' && roles.includes('jv_coach')) {
-      return true;
-    }
-    if (
-      activeWorkspace.kind === 'master_fr_soph' &&
-      roles.includes('fr_soph_coach')
-    ) {
-      return true;
-    }
-    return false;
-  }, [activeWorkspace, user, activeRole, roles]);
+  const canEditActiveWorkspace =
+    activeWorkspace != null && roles.length > 0;
 
   const isAdmin = roles.includes('admin');
-  const isAdminLiveMode =
-    isAdmin && activeRole === 'admin' && adminEditMode === 'live';
+  const adminEditMode: AdminEditMode = 'personal';
+  const isAdminLiveMode = false;
 
   const workspaceLabel = useMemo(() => {
-    if (!activeRole) return 'No role';
-    if (activeRole === 'admin') {
-      return adminEditMode === 'live'
-        ? 'Admin · Live coaches'
-        : 'Admin · Personal (test)';
+    if (roles.length === 0) return 'No role';
+    if (roles.length === 1 && activeRole) {
+      return `${roleLabel(activeRole)} · Shared roster`;
     }
-    const role = roleLabel(activeRole);
-    const kind = workspaceKindLabel(workspaceKindForRole(activeRole));
-    return `${role} · ${kind}`;
-  }, [activeRole, adminEditMode]);
+    return 'Shared roster';
+  }, [roles, activeRole]);
 
   const value = useMemo<ActiveRoleValue>(
     () => ({
@@ -234,8 +184,6 @@ export function ActiveRoleProvider({
       loading,
       error,
       isAdmin,
-      adminEditMode,
-      isAdminLiveMode,
       setActiveRole,
       setAdminEditMode,
       refreshRoles,

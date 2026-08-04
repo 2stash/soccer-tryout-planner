@@ -62,7 +62,9 @@ export type RosterInvite = {
   accepted_user_id: string | null;
 };
 
+/** Shared team workspace; legacy kinds kept for typing during migration. */
 export type WorkspaceKind =
+  | 'shared'
   | 'personal'
   | 'master_varsity'
   | 'master_jv'
@@ -85,10 +87,15 @@ export type UnavailablePool = 'unavailable';
 /** Player assignment: null = Available, unavailable pool, or a playing squad. */
 export type PlayerAssignment = SquadTeam | UnavailablePool;
 
-export const SQUAD_TEAMS: { id: SquadTeam; label: string }[] = [
-  { id: 'varsity', label: 'Varsity' },
-  { id: 'jv', label: 'JV' },
-  { id: 'fr_soph', label: 'Fr/Soph' },
+export const SQUAD_TEAMS: {
+  id: SquadTeam;
+  label: string;
+  /** Compact UI (depth table Team column). */
+  shortLabel: string;
+}[] = [
+  { id: 'varsity', label: 'Varsity', shortLabel: 'Var' },
+  { id: 'jv', label: 'JV', shortLabel: 'JV' },
+  { id: 'fr_soph', label: 'Fr/Soph', shortLabel: 'Fr/Soph' },
 ];
 
 export const UNAVAILABLE_POOL: UnavailablePool = 'unavailable';

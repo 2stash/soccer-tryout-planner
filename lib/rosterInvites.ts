@@ -30,36 +30,35 @@ export async function listRosterInvites(
   return (data ?? []) as RosterInvite[];
 }
 
+type PendingInviteRow = RosterInvite & {
+  roster_name: string;
+  roster_owner_id: string;
+  roster_created_at: string;
+};
+
 export async function listPendingInvitesForEmail(): Promise<
   PendingInviteWithRoster[]
 > {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const email = user?.email?.trim().toLowerCase();
-  if (!email) return [];
-
-  // Filter by email: admins can SELECT all invites on their rosters via RLS,
-  // so we must not show other people's invites on the invitee's Dashboard.
-  const { data, error } = await supabase
-    .from('roster_invites')
-    .select('*, roster:rosters(*)')
-    .eq('status', 'pending')
-    .eq('email', email)
-    .order('created_at', { ascending: false });
-
+  const { data, error } = await supabase.rpc('list_my_pending_invites');
   if (error) throw error;
 
-  const rows: PendingInviteWithRoster[] = [];
-  for (const row of data ?? []) {
-    const roster = row.roster as unknown as Roster | null;
-    if (!roster?.id) continue;
-    const { roster: _r, ...invite } = row as typeof row & {
-      roster: Roster;
-    };
-    rows.push({ ...(invite as RosterInvite), roster });
-  }
-  return rows;
+  return ((data ?? []) as PendingInviteRow[]).map((row) => ({
+    id: row.id,
+    roster_id: row.roster_id,
+    email: row.email,
+    role: row.role,
+    invited_by: row.invited_by,
+    status: row.status,
+    created_at: row.created_at,
+    accepted_at: row.accepted_at,
+    accepted_user_id: row.accepted_user_id,
+    roster: {
+      id: row.roster_id,
+      name: row.roster_name,
+      owner_id: row.roster_owner_id,
+      created_at: row.roster_created_at,
+    },
+  }));
 }
 
 export async function createRosterInvite(params: {

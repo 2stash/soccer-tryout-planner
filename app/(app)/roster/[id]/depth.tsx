@@ -12,7 +12,6 @@ import { PlayerCardList } from '@/components/PlayerCardList';
 import { PlayerEditSheet } from '@/components/PlayerEditSheet';
 import { DepthPositionList } from '@/components/DepthPositionList';
 import { FormationPitchPicker } from '@/components/FormationPitchPicker';
-import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
 import { playersInRankPool } from '@/lib/assignPools';
 import {
@@ -21,16 +20,8 @@ import {
   type GradeFilter,
 } from '@/lib/availableRank';
 import { confirmAction } from '@/lib/confirm';
-import { useMasterConflicts } from '@/lib/MasterConflictContext';
 import { useRosterData } from '@/lib/RosterDataContext';
 import { useLayout } from '@/lib/layout';
-import { mergeLiveSquadPlayers } from '@/lib/adminLiveRoster';
-import {
-  isMasterKind,
-  masterKindForSquad,
-  type MasterKind,
-} from '@/lib/masterConflicts';
-import { ownSquadForWorkspace } from '@/lib/masterWorkspace';
 import { comparePlayersByName } from '@/lib/playerSort';
 import {
   formatDepthGroupLabel,
@@ -45,7 +36,6 @@ import {
   countBySchoolYear,
 } from '@/lib/schoolYear';
 import {
-  buildFormationSectionFromPlayers,
   buildViewsFromCache,
   getSquadDepthViewFromCache,
   type SquadPlayerSection,
@@ -56,7 +46,7 @@ import type {
   PlayerInput,
   SquadTeam,
 } from '@/lib/types';
-import { SQUAD_TEAMS, UNAVAILABLE_POOL } from '@/lib/types';
+import { SQUAD_TEAMS } from '@/lib/types';
 import { colors, layout } from '@/constants/theme';
 
 const GRADE_FILTERS: { key: GradeFilter; label: string }[] = [
@@ -64,27 +54,7 @@ const GRADE_FILTERS: { key: GradeFilter; label: string }[] = [
   ...CLASS_ORDER_DESC.map((y) => ({ key: y as GradeFilter, label: y })),
 ];
 
-function positionRows(
-  playersAtPos: Player[],
-  starterCount: number
-): SquadPlayerSection['rows'] {
-  return playersAtPos.map((p, index) => ({
-    key: p.id,
-    player: p,
-    role: index < starterCount ? 'Starter' : 'Sub',
-  }));
-}
-
-type MasterFilter = `master:${MasterKind}`;
-type SquadFilter = 'all' | SquadTeam | MasterFilter;
-
-function isMasterFilter(key: SquadFilter): key is MasterFilter {
-  return typeof key === 'string' && key.startsWith('master:');
-}
-
-function masterKindFromFilter(key: MasterFilter): MasterKind {
-  return key.slice('master:'.length) as MasterKind;
-}
+type SquadFilter = 'all' | SquadTeam;
 
 function isSquadTeamFilter(key: SquadFilter): key is SquadTeam {
   return key === 'varsity' || key === 'jv' || key === 'fr_soph';
@@ -96,15 +66,6 @@ const DEPTH_THREE_COL_MIN = 1280;
 export default function DepthChartScreen() {
   const { session, loading: authLoading, configured } = useAuth();
   const { width, isPhone, isTablet, isDesktop } = useLayout();
-  const { workspaceKind, isAdminLiveMode } = useActiveRole();
-  const {
-    officialPlayers,
-    depthForMaster,
-    otherMasterKinds,
-    masterLabel,
-    canonicalSquad,
-    loading: masterClaimsLoading,
-  } = useMasterConflicts();
   const {
     players,
     depthCache,
@@ -126,62 +87,23 @@ export default function DepthChartScreen() {
     resetAvailableOrder,
   } = useRosterData();
 
-  const isMasterView =
-    workspaceKind != null && isMasterKind(workspaceKind);
-  const ownSquad = ownSquadForWorkspace(workspaceKind);
   const [gradeFilter, setGradeFilter] = useState<GradeFilter>('all');
   const [sortingAvailable, setSortingAvailable] = useState(false);
 
-  const filters = useMemo((): { key: SquadFilter; label: string }[] => {
-    // Admin Live: same single-team depth UI as a head coach, for each master.
-    if (isAdminLiveMode) {
-      return [
-        ...SQUAD_TEAMS.map((t) => ({
-          key: t.id as SquadFilter,
-          label: t.label,
-        })),
-        { key: 'all', label: 'All players' },
-      ];
-    }
-    if (isMasterView && ownSquad) {
-      const ownLabel =
-        SQUAD_TEAMS.find((t) => t.id === ownSquad)?.label ?? ownSquad;
-      return [
-        { key: ownSquad, label: ownLabel },
-        ...otherMasterKinds.map((kind) => ({
-          key: `master:${kind}` as MasterFilter,
-          label: masterLabel(kind),
-        })),
-        { key: 'all', label: 'All players' },
-      ];
-    }
-    return [
+  const filters = useMemo(
+    (): { key: SquadFilter; label: string }[] => [
       { key: 'all', label: 'All players' },
       ...SQUAD_TEAMS.map((t) => ({ key: t.id as SquadFilter, label: t.label })),
-    ];
-  }, [
-    isAdminLiveMode,
-    isMasterView,
-    ownSquad,
-    otherMasterKinds,
-    masterLabel,
-  ]);
-
-  const [filter, setFilter] = useState<SquadFilter>(
-    () => ownSquad ?? (isAdminLiveMode ? 'varsity' : 'all')
+    ],
+    []
   );
+
+  const [filter, setFilter] = useState<SquadFilter>('all');
   useEffect(() => {
     if (!filters.some((f) => f.key === filter)) {
-      // Team-first filters (head coach / Admin Live) default to first team.
       setFilter(filters[0]?.key ?? 'all');
     }
   }, [filters, filter]);
-  // Entering Live coaches: land on Varsity depth (editable) like a head coach.
-  useEffect(() => {
-    if (isAdminLiveMode && filter === 'all') {
-      setFilter('varsity');
-    }
-  }, [isAdminLiveMode]);
 
   const [selectedPosition, setSelectedPosition] = useState(9);
   const [formationOpen, setFormationOpen] = useState(false);
@@ -193,14 +115,9 @@ export default function DepthChartScreen() {
     return players.find((p) => p.id === editing.id) ?? editing;
   }, [editing, players]);
 
-  const showingOtherMaster = isMasterFilter(filter);
-  const canReorder = filter !== 'all' && !showingOtherMaster;
-  /** Own team or another master's official squad — same depth UI. */
-  const viewingSquadDepth = canReorder || showingOtherMaster;
-  /** Other masters use MasterConflict depth cache, not local depthReady. */
-  const squadDepthReady = showingOtherMaster
-    ? !masterClaimsLoading
-    : depthReady;
+  const canReorder = filter !== 'all';
+  const viewingSquadDepth = canReorder;
+  const squadDepthReady = depthReady;
   const starterCount = getDepthStarterCount(selectedPosition);
   const filterLabel =
     filters.find((item) => item.key === filter)?.label ?? 'All players';
@@ -212,51 +129,16 @@ export default function DepthChartScreen() {
   const showSideXi = useThreeCol && viewingSquadDepth;
 
   const filteredPlayers = useMemo(() => {
-    if (showingOtherMaster) {
-      const kind = masterKindFromFilter(filter);
-      const squad = canonicalSquad(kind);
-      return officialPlayers(kind, players).map((p) => ({
-        ...p,
-        squad_team: squad,
-      }));
-    }
-    // Admin Live: squad tabs use claims + roster flatten (claims may lag assign).
-    if (isAdminLiveMode && isSquadTeamFilter(filter)) {
-      const kind = masterKindForSquad(filter);
-      const squad = canonicalSquad(kind);
-      return mergeLiveSquadPlayers({
-        squad,
-        claimedPlayers: officialPlayers(kind, players),
-        rosterPlayers: players,
-      });
-    }
     if (filter === 'all') return players;
-    // Own team: squad + Available (depth order still squad-only).
-    if (isMasterView && ownSquad && filter === ownSquad) {
-      return players.filter(
-        (p) => p.squad_team === ownSquad || p.squad_team == null
-      );
-    }
     return players.filter((p) => p.squad_team === filter);
-  }, [
-    players,
-    filter,
-    showingOtherMaster,
-    officialPlayers,
-    canonicalSquad,
-    isMasterView,
-    isAdminLiveMode,
-    ownSquad,
-  ]);
+  }, [players, filter]);
 
   const squadOnlyPlayers = useMemo(() => {
-    if (showingOtherMaster) return filteredPlayers;
-    if (isAdminLiveMode && isSquadTeamFilter(filter)) return filteredPlayers;
     if (isSquadTeamFilter(filter)) {
       return filteredPlayers.filter((p) => p.squad_team === filter);
     }
     return filteredPlayers;
-  }, [filteredPlayers, filter, showingOtherMaster, isAdminLiveMode]);
+  }, [filteredPlayers, filter]);
 
   const availableOrdered = useMemo(
     () => orderAvailablePlayers(playersInRankPool(players, 'available')),
@@ -281,10 +163,10 @@ export default function DepthChartScreen() {
     [availableVisible]
   );
 
-  const addToTeamsForAvailable = useMemo((): SquadTeam[] => {
-    if (isMasterView && ownSquad) return [ownSquad];
-    return SQUAD_TEAMS.map((t) => t.id);
-  }, [isMasterView, ownSquad]);
+  const addToTeamsForAvailable = useMemo(
+    (): SquadTeam[] => SQUAD_TEAMS.map((t) => t.id),
+    []
+  );
 
   useEffect(() => {
     if (loading || availableOrdered.length === 0) return;
@@ -303,170 +185,16 @@ export default function DepthChartScreen() {
     [filteredPlayers, selectedPosition]
   );
 
-  const allViews = useMemo(() => {
-    const starterN = getDepthStarterCount(selectedPosition);
-
-    const appendPools = (
-      squadSections: SquadPlayerSection[],
-      positionSections: SquadPlayerSection[]
-    ) => {
-      const available = orderAvailablePlayers(
-        players.filter((p) => p.squad_team == null)
-      );
-      if (available.length > 0) {
-        squadSections.push({
-          title: 'Available',
-          rankPool: 'available',
-          rows: available.map((p) => ({ key: p.id, player: p })),
-        });
-        const availableAtPos = available.filter((p) =>
-          playerInDepthGroup(p.positions, selectedPosition)
-        );
-        if (availableAtPos.length > 0) {
-          positionSections.push({
-            title: 'Available',
-            rankPool: 'available',
-            rows: availableAtPos.map((p) => ({ key: p.id, player: p })),
-          });
-        }
-      }
-
-      const unavailable = orderAvailablePlayers(
-        players.filter((p) => p.squad_team === UNAVAILABLE_POOL)
-      );
-      if (unavailable.length > 0) {
-        squadSections.push({
-          title: 'Unavailable',
-          rankPool: 'unavailable',
-          rows: unavailable.map((p) => ({ key: p.id, player: p })),
-        });
-        const unavailableAtPos = unavailable.filter((p) =>
-          playerInDepthGroup(p.positions, selectedPosition)
-        );
-        if (unavailableAtPos.length > 0) {
-          positionSections.push({
-            title: 'Unavailable',
-            rankPool: 'unavailable',
-            rows: unavailableAtPos.map((p) => ({ key: p.id, player: p })),
-          });
-        }
-      }
-    };
-
-    // Admin Live All: all three masters from official claims (duals on each).
-    if (isAdminLiveMode) {
-      const positionSections: SquadPlayerSection[] = [];
-      const squadSections: SquadPlayerSection[] = [];
-      for (const team of SQUAD_TEAMS) {
-        const kind = masterKindForSquad(team.id);
-        const list = mergeLiveSquadPlayers({
-          squad: team.id,
-          claimedPlayers: officialPlayers(kind, players),
-          rosterPlayers: players,
-        });
-        const cache = depthCache[team.id] ?? depthForMaster(kind);
-        const view = getSquadDepthViewFromCache({
-          squadPlayers: list,
-          cache,
-          positionNumber: selectedPosition,
-        });
-        squadSections.push(
-          buildFormationSectionFromPlayers(team.label, team.id, list, cache)
-        );
-        positionSections.push({
-          title: team.label,
-          squadTeam: team.id,
-          rows: positionRows(view.orderedAtPosition, starterN),
-        });
-      }
-      appendPools(squadSections, positionSections);
-      return { squadSections, positionSections };
-    }
-
-    // Head coach All: own team first, then other masters, then Available.
-    if (isMasterView && ownSquad) {
-      const positionSections: SquadPlayerSection[] = [];
-      const squadSections: SquadPlayerSection[] = [];
-
-      const ownLabel =
-        SQUAD_TEAMS.find((t) => t.id === ownSquad)?.label ?? ownSquad;
-      const ownPlayers = players.filter((p) => p.squad_team === ownSquad);
-      const ownView = getSquadDepthViewFromCache({
-        squadPlayers: ownPlayers,
-        cache: depthCache[ownSquad],
-        positionNumber: selectedPosition,
-      });
-      squadSections.push(
-        buildFormationSectionFromPlayers(
-          ownLabel,
-          ownSquad,
-          ownPlayers,
-          depthCache[ownSquad]
-        )
-      );
-      positionSections.push({
-        title: ownLabel,
-        squadTeam: ownSquad,
-        rows: positionRows(ownView.orderedAtPosition, starterN),
-      });
-
-      for (const kind of otherMasterKinds) {
-        const squad = canonicalSquad(kind);
-        const label = masterLabel(kind);
-        const list = officialPlayers(kind, players).map((p) => ({
-          ...p,
-          squad_team: squad,
-        }));
-        const view = getSquadDepthViewFromCache({
-          squadPlayers: list,
-          cache: depthForMaster(kind),
-          positionNumber: selectedPosition,
-        });
-        squadSections.push(
-          buildFormationSectionFromPlayers(
-            label,
-            squad,
-            list,
-            depthForMaster(kind),
-            { readOnly: true }
-          )
-        );
-        positionSections.push({
-          title: label,
-          squadTeam: squad,
-          readOnly: true,
-          rows: positionRows(view.orderedAtPosition, starterN),
-        });
-      }
-
-      appendPools(squadSections, positionSections);
-      return { squadSections, positionSections };
-    }
-
-    const alwaysSquads: SquadTeam[] =
-      isAdminLiveMode || !(isMasterView && ownSquad)
-        ? SQUAD_TEAMS.map((t) => t.id)
-        : [ownSquad];
-    // Paint vacant shells while depth loads — same shape as the ready view.
-    return buildViewsFromCache(
-      players,
-      depthCache,
-      selectedPosition,
-      alwaysSquads
-    );
-  }, [
-    players,
-    depthCache,
-    selectedPosition,
-    isMasterView,
-    isAdminLiveMode,
-    ownSquad,
-    otherMasterKinds,
-    officialPlayers,
-    depthForMaster,
-    canonicalSquad,
-    masterLabel,
-  ]);
+  const allViews = useMemo(
+    () =>
+      buildViewsFromCache(
+        players,
+        depthCache,
+        selectedPosition,
+        SQUAD_TEAMS.map((t) => t.id)
+      ),
+    [players, depthCache, selectedPosition]
+  );
 
   /** All-players middle: teams at the selected position only (no Available). */
   const teamPositionSections = useMemo(
@@ -480,35 +208,15 @@ export default function DepthChartScreen() {
   const showingAllPlayers = filter === 'all';
 
   const squadView = useMemo(() => {
-    if (showingOtherMaster) {
-      const kind = masterKindFromFilter(filter);
-      return getSquadDepthViewFromCache({
-        squadPlayers: squadOnlyPlayers,
-        cache: depthForMaster(kind),
-        positionNumber: selectedPosition,
-      });
-    }
     if (filter === 'all' || !isSquadTeamFilter(filter)) {
       return null;
     }
-    const cache = isAdminLiveMode
-      ? (depthCache[filter] ?? depthForMaster(masterKindForSquad(filter)))
-      : depthCache[filter];
     return getSquadDepthViewFromCache({
       squadPlayers: squadOnlyPlayers,
-      cache,
+      cache: depthCache[filter],
       positionNumber: selectedPosition,
     });
-  }, [
-    filter,
-    squadOnlyPlayers,
-    depthCache,
-    selectedPosition,
-    showingOtherMaster,
-    depthForMaster,
-    isAdminLiveMode,
-  ]);
-
+  }, [filter, squadOnlyPlayers, depthCache, selectedPosition]);
   const starterElsewhereByPlayer = useMemo(() => {
     if (!squadView) return {};
     const currentGroup = getDepthPositionGroup(selectedPosition);
@@ -523,6 +231,34 @@ export default function DepthChartScreen() {
     }
     return result;
   }, [squadView, selectedPosition]);
+
+  /** All-players middle: ★ for starters elsewhere across every squad. */
+  const allStarterElsewhereByPlayer = useMemo(() => {
+    if (filter !== 'all') return {};
+    const currentGroup = getDepthPositionGroup(selectedPosition);
+    const result: Record<string, string[]> = {};
+    for (const team of SQUAD_TEAMS) {
+      const view = getSquadDepthViewFromCache({
+        squadPlayers: players.filter((p) => p.squad_team === team.id),
+        cache: depthCache[team.id],
+        positionNumber: selectedPosition,
+      });
+      for (const [playerId, positions] of Object.entries(
+        view.starterPositionsByPlayer
+      )) {
+        const labels = positions
+          .filter((n) => !currentGroup.includes(n))
+          .map((n) => formatDepthGroupLabel(n));
+        if (labels.length === 0) continue;
+        const existing = result[playerId] ?? [];
+        for (const label of labels) {
+          if (!existing.includes(label)) existing.push(label);
+        }
+        result[playerId] = existing;
+      }
+    }
+    return result;
+  }, [filter, players, depthCache, selectedPosition]);
 
   const starterSlots = squadView?.starterSlots ?? [];
   const starterSection = useMemo(
@@ -637,18 +373,14 @@ export default function DepthChartScreen() {
   const subtitle = isPhone
     ? canReorder
       ? `Tap a player to edit · ↑ ↓ to reorder · top ${starterCount} start`
-      : showingOtherMaster
-        ? `${filterLabel} is read-only · pick your team to edit depth`
-        : 'Pick your team to reorder. All players is read-only.'
+      : 'Pick a squad to reorder. All players is read-only.'
     : canReorder
       ? starterCount > 1
         ? `Top ${starterCount} at ${positionLabel} are starters; reorder with ↑ ↓.`
         : `Top player at ${positionLabel} is the starter; reorder with ↑ ↓.`
-      : showingOtherMaster
-        ? `${filterLabel} depth is live and read-only. Switch to your team to edit.`
-        : showingAllPlayers
-          ? 'Teams at this position in the middle · Available on the right.'
-          : 'Pick a squad to reorder depth. All players is read-only.';
+      : showingAllPlayers
+        ? 'Teams at this position in the middle · Available on the right.'
+        : 'Pick a squad to reorder depth. All players is read-only.';
 
   const formationBlock = (
     <View style={[styles.formationBlock, isPhone && styles.formationBlockPhone]}>
@@ -724,17 +456,12 @@ export default function DepthChartScreen() {
   );
 
   const depthList = (
-    <View
-      style={[styles.depthBlock, showingOtherMaster && styles.readOnlyPanel]}
-    >
+    <View style={styles.depthBlock}>
       <View style={styles.colTitleRow}>
         <Text style={styles.colTitle}>
           {positionLabel} · {filterLabel}
           {canReorder ? ' · depth order' : ''}
         </Text>
-        {showingOtherMaster ? (
-          <Text style={styles.readOnlyBadge}>Read-only</Text>
-        ) : null}
       </View>
       <Text style={styles.colHint}>
         {viewingSquadDepth && !squadDepthReady
@@ -742,16 +469,12 @@ export default function DepthChartScreen() {
           : compactLists
             ? canReorder
               ? 'Tap to edit · ↑ ↓ to set starter order'
-              : showingOtherMaster
-                ? 'Read-only depth order from this master'
-                : 'Tap a player to edit'
+              : 'Tap a player to edit'
             : canReorder
               ? starterCount > 1
                 ? `Use ↑ ↓ — top ${starterCount} are starters, rest are subs`
                 : 'Use ↑ ↓ to set starter (top) and subs'
-              : showingOtherMaster
-                ? 'Official depth order · not editable here'
-                : 'Varsity → JV → Fr/Soph at this position · pick a squad to reorder'}
+              : 'Varsity → JV → Fr/Soph at this position · edit Positions / Team · pick a squad to reorder'}
       </Text>
       {viewingSquadDepth ? (
         <>
@@ -786,49 +509,47 @@ export default function DepthChartScreen() {
             </View>
           ) : null}
         </>
-      ) : compactLists ? (
-        <PlayerCardList
-          sections={
-            showingAllPlayers
-              ? teamPositionSections
-              : allViews.positionSections
-          }
-          sectionsPending={
-            loading ||
-            (isMasterView
-              ? masterClaimsLoading
-              : !depthReady && players.length > 0)
-          }
-          emptyPlayers={!loading && middleCandidates.length === 0}
-          onPressPlayer={setEditing}
-        />
       ) : (
-        <PlayerTable
-          players={middleCandidates}
-          onSave={handleSave}
-          showRankColumns={false}
-          showDelete={false}
-          sections={
-            showingAllPlayers
-              ? teamPositionSections
-              : allViews.positionSections
-          }
-          sectionsPending={
-            loading ||
-            (isMasterView
-              ? masterClaimsLoading
-              : !depthReady && players.length > 0)
-          }
-        />
+        <View style={styles.allTeamsDepth}>
+          {loading || (!depthReady && players.length > 0) ? (
+            <Text style={styles.colHint}>Loading depth order…</Text>
+          ) : (
+            teamPositionSections.map((section) => {
+              const sectionPlayers = section.rows
+                .map((row) => row.player)
+                .filter((p): p is Player => Boolean(p));
+              return (
+                <View
+                  key={section.squadTeam ?? section.title}
+                  style={styles.teamDepthBlock}
+                >
+                  <Text style={styles.teamDepthTitle}>{section.title}</Text>
+                  <DepthPositionList
+                    players={sectionPlayers}
+                    canReorder={false}
+                    starterCount={starterCount}
+                    starterElsewhereByPlayer={allStarterElsewhereByPlayer}
+                    compact={compactLists}
+                    onPressPlayer={compactLists ? setEditing : undefined}
+                    onSave={handleSave}
+                    onAssignSquad={
+                      compactLists ? undefined : handleAssignSquad
+                    }
+                    onMove={async () => {}}
+                    emptyText={`No ${positionLabel} players on ${section.title}.`}
+                  />
+                </View>
+              );
+            })
+          )}
+        </View>
       )}
     </View>
   );
 
   const benchBlock =
     viewingSquadDepth ? (
-      <View
-        style={[styles.benchBlock, showingOtherMaster && styles.readOnlyPanel]}
-      >
+      <View style={styles.benchBlock}>
         <View style={styles.subsBreak}>
           <View style={styles.subsLine} />
           <Text style={styles.subsLabel}>Subs · bench order</Text>
@@ -870,14 +591,9 @@ export default function DepthChartScreen() {
     ) : null;
 
   const rightXi = showSideXi ? (
-    <View
-      style={[styles.rightCol, showingOtherMaster && styles.readOnlyPanel]}
-    >
+    <View style={styles.rightCol}>
       <View style={styles.colTitleRow}>
         <Text style={styles.colTitle}>{filterLabel}</Text>
-        {showingOtherMaster ? (
-          <Text style={styles.readOnlyBadge}>Read-only</Text>
-        ) : null}
       </View>
       <Text style={styles.colHint}>
         {canReorder
@@ -971,8 +687,6 @@ export default function DepthChartScreen() {
               nestedScrollEnabled
             >
               {depthList}
-              {/* Wide layout keeps XI+subs on the right; keep bench here too when
-                  the side column is absent so Live/coach parity holds. */}
               {!showSideXi ? benchBlock : null}
             </ScrollView>
           </View>
@@ -1064,6 +778,7 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     gap: 12,
+    paddingRight: layout.pagePadding,
   },
   centered: {
     flex: 1,
@@ -1138,7 +853,7 @@ const styles = StyleSheet.create({
   columns: {
     flex: 1,
     flexDirection: 'row',
-    gap: 12,
+    gap: 6,
     minHeight: 0,
   },
   leftCol: {
@@ -1164,6 +879,17 @@ const styles = StyleSheet.create({
   },
   depthBlock: {
     gap: 8,
+  },
+  allTeamsDepth: {
+    gap: 16,
+  },
+  teamDepthBlock: {
+    gap: 6,
+  },
+  teamDepthTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.text,
   },
   availableAtPos: {
     gap: 8,
@@ -1270,7 +996,7 @@ const styles = StyleSheet.create({
   tabletRow: {
     flex: 1,
     flexDirection: 'row',
-    gap: 16,
+    gap: 6,
     minHeight: 0,
   },
   tabletLeft: {

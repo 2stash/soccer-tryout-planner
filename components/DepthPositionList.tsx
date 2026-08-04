@@ -434,23 +434,18 @@ function DepthRow({
         <Text style={[styles.cellText, styles.yearCol]} numberOfLines={1}>
           {year}
         </Text>
-        {canReorder ? (
-          <PositionSelect
-            style={styles.posCol}
-            compact
-            value={positions}
-            onChange={(next) => {
-              setPositions(next);
-              void commitPositions(next);
-            }}
-          />
-        ) : (
-          <Text style={[styles.cellText, styles.posCol]} numberOfLines={1}>
-            {formatPositionsShort(positions) || '—'}
-          </Text>
-        )}
+        <PositionSelect
+          style={styles.posCol}
+          compact
+          value={positions}
+          onChange={(next) => {
+            setPositions(next);
+            void commitPositions(next);
+          }}
+        />
         {showTeam ? (
           <SquadSelect
+            compact
             style={styles.teamCol}
             value={player.squad_team}
             disabled={saving || moving}
@@ -551,6 +546,7 @@ const styles = StyleSheet.create({
     overflow: 'visible',
     backgroundColor: colors.surface,
     minWidth: 560,
+    marginRight: 8,
   },
   row: {
     flexDirection: 'row',
@@ -559,6 +555,7 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
     paddingVertical: 6,
     paddingHorizontal: 8,
+    paddingRight: 16,
     gap: 4,
     overflow: 'visible',
     zIndex: 1,
@@ -581,7 +578,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.muted,
     textTransform: 'uppercase',
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
   },
   rankCol: {
     width: 32,
@@ -599,13 +596,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   roleCol: {
-    width: 64,
+    width: 58,
   },
   roleText: {
     fontSize: 12,
     fontWeight: '700',
     color: colors.muted,
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
   },
   starCol: {
     width: 22,
@@ -651,25 +648,31 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
   nameCol: {
-    flex: 1.4,
-    minWidth: 120,
+    flexGrow: 0,
+    flexShrink: 1,
+    width: 140,
+    minWidth: 100,
   },
   yearCol: {
-    width: 72,
+    width: 64,
   },
   posCol: {
-    flex: 1.5,
-    minWidth: 120,
+    flexGrow: 0,
+    flexShrink: 1,
+    width: 140,
+    minWidth: 100,
   },
   teamCol: {
-    flex: 1,
-    minWidth: 100,
+    width: 78,
+    flexGrow: 0,
+    flexShrink: 0,
+    minWidth: 78,
   },
   cellText: {
     fontSize: 14,
     fontWeight: '600',
     color: colors.text,
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
   },
   moveBtn: {
     width: 28,

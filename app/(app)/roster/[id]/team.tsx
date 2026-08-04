@@ -8,14 +8,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Stack, useFocusEffect } from 'expo-router';
+import { Redirect, Stack, useFocusEffect } from 'expo-router';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
 import { useLayout } from '@/lib/layout';
 import { alertRequiresOnline } from '@/lib/offline/gate';
 import { useOffline } from '@/lib/offline/OfflineContext';
 import {
-  addRosterRole,
   listRosterMembers,
   removeRosterRole,
   roleLabel,
@@ -29,13 +28,6 @@ import type { RosterInvite, RosterMember, RosterRole } from '@/lib/types';
 import { ROSTER_ROLES } from '@/lib/types';
 import { colors, layout } from '@/constants/theme';
 
-const SELF_ASSIGN_ROLES: RosterRole[] = [
-  'varsity_coach',
-  'jv_coach',
-  'fr_soph_coach',
-  'assistant',
-];
-
 const INVITE_ROLES: RosterRole[] = [
   'varsity_coach',
   'jv_coach',
@@ -46,16 +38,21 @@ const INVITE_ROLES: RosterRole[] = [
 export default function TeamSettingsScreen() {
   const { user } = useAuth();
   const { isPhone } = useLayout();
-  const { rosterId, isAdmin, roles: myRoles, refreshRoles } = useActiveRole();
+  const {
+    rosterId,
+    isAdmin,
+    refreshRoles,
+    loading: roleLoading,
+  } = useActiveRole();
   const { isOnline } = useOffline();
   const [members, setMembers] = useState<RosterMember[]>([]);
   const [invites, setInvites] = useState<RosterInvite[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busyRole, setBusyRole] = useState<RosterRole | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<RosterRole>('varsity_coach');
   const [inviteBusy, setInviteBusy] = useState(false);
   const [revokeBusyId, setRevokeBusyId] = useState<string | null>(null);
+  const [removeBusyId, setRemoveBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -84,9 +81,13 @@ export default function TeamSettingsScreen() {
     }, [refresh])
   );
 
-  const myRoleSet = new Set(myRoles);
-  const seatHolder = (role: RosterRole) =>
-    members.find((m) => m.role === role);
+  // Prefer live membership rows — role context can lag briefly after load.
+  const canManageTeam =
+    isAdmin ||
+    Boolean(
+      user &&
+        members.some((m) => m.user_id === user.id && m.role === 'admin')
+    );
 
   const assistantCount = useMemo(
     () => members.filter((m) => m.role === 'assistant').length,
@@ -105,44 +106,30 @@ export default function TeamSettingsScreen() {
     return invites.some((i) => i.role === inviteRole);
   }, [inviteRole, assistantCount, pendingAssistantCount, members, invites]);
 
-  async function handleToggle(role: RosterRole) {
-    if (!user || !isAdmin) return;
+  async function handleRemoveMembership(member: RosterMember) {
+    if (!canManageTeam || member.role === 'admin') return;
     if (!isOnline) {
-      alertRequiresOnline('Team role changes');
+      alertRequiresOnline('Removing team roles');
       return;
     }
-    setBusyRole(role);
+    setRemoveBusyId(member.id);
     setError(null);
     try {
-      if (myRoleSet.has(role)) {
-        await removeRosterRole({
-          rosterId,
-          userId: user.id,
-          role,
-        });
-      } else {
-        const holder = seatHolder(role);
-        if (holder && holder.user_id !== user.id && role !== 'assistant') {
-          throw new Error(
-            `${roleLabel(role)} is already assigned to another coach.`
-          );
-        }
-        await addRosterRole({
-          rosterId,
-          userId: user.id,
-          role,
-        });
-      }
+      await removeRosterRole({
+        rosterId,
+        userId: member.user_id,
+        role: member.role,
+      });
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update role');
+      setError(e instanceof Error ? e.message : 'Failed to remove role');
     } finally {
-      setBusyRole(null);
+      setRemoveBusyId(null);
     }
   }
 
   async function handleInvite() {
-    if (!user || !isAdmin) return;
+    if (!user || !canManageTeam) return;
     if (!isOnline) {
       alertRequiresOnline('Sending invites');
       return;
@@ -166,7 +153,7 @@ export default function TeamSettingsScreen() {
   }
 
   async function handleRevoke(inviteId: string) {
-    if (!isAdmin) return;
+    if (!canManageTeam) return;
     if (!isOnline) {
       alertRequiresOnline('Revoking invites');
       return;
@@ -183,6 +170,10 @@ export default function TeamSettingsScreen() {
     }
   }
 
+  if (!roleLoading && !isAdmin) {
+    return <Redirect href={`/roster/${rosterId}`} />;
+  }
+
   return (
     <ScrollView
       style={styles.screen}
@@ -195,23 +186,19 @@ export default function TeamSettingsScreen() {
       <Text style={styles.heading}>Team</Text>
       <Text style={styles.sub}>
         Invite coaches by email (they accept from the Dashboard after signing
-        in with that email). Self-assign roles below for testing. Head-coach
-        roles edit that master overlay; Admin / Assistant edit your personal
-        overlay.
+        in with that email). Coaching titles are for display; everyone edits
+        the same shared roster.
       </Text>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {!isAdmin ? (
+      <Text style={styles.sectionTitle}>Invite by email</Text>
+      {!canManageTeam ? (
         <Text style={styles.notice}>
-          Only the roster Admin can change roles or invite coaches. Your
-          roles: {myRoles.map(roleLabel).join(', ') || 'none'}.
+          Only the roster Admin can invite coaches.
         </Text>
-      ) : null}
-
-      {isAdmin ? (
+      ) : (
         <>
-          <Text style={styles.sectionTitle}>Invite by email</Text>
           <Text style={styles.inviteHint}>
             No email is sent yet — tell them to sign up / sign in with this
             address, then Accept on their Dashboard.
@@ -302,49 +289,7 @@ export default function TeamSettingsScreen() {
             ))
           )}
         </>
-      ) : null}
-
-      <Text style={[styles.sectionTitle, { marginTop: 28 }]}>
-        Your roles (self-assign)
-      </Text>
-      {SELF_ASSIGN_ROLES.map((role) => {
-        const held = myRoleSet.has(role);
-        const other = seatHolder(role);
-        const takenByOther =
-          !!other && other.user_id !== user?.id && role !== 'assistant';
-        const busy = busyRole === role;
-        return (
-          <View key={role} style={styles.roleRow}>
-            <View style={styles.roleInfo}>
-              <Text style={styles.roleName}>{roleLabel(role)}</Text>
-              {takenByOther ? (
-                <Text style={styles.roleMeta}>Seat taken by another coach</Text>
-              ) : held ? (
-                <Text style={styles.roleMeta}>Assigned to you</Text>
-              ) : (
-                <Text style={styles.roleMeta}>Not assigned</Text>
-              )}
-            </View>
-            {isAdmin ? (
-              <Pressable
-                style={[
-                  styles.roleBtn,
-                  held && styles.roleBtnOn,
-                  (busy || takenByOther) && styles.disabled,
-                ]}
-                disabled={busy || takenByOther}
-                onPress={() => void handleToggle(role)}
-              >
-                <Text
-                  style={[styles.roleBtnText, held && styles.roleBtnTextOn]}
-                >
-                  {busy ? '…' : held ? 'Remove' : 'Assign to me'}
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-        );
-      })}
+      )}
 
       <Text style={[styles.sectionTitle, { marginTop: 28 }]}>
         All memberships
@@ -352,16 +297,33 @@ export default function TeamSettingsScreen() {
       {loading ? (
         <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />
       ) : (
-        members.map((m) => (
-          <View key={m.id} style={styles.memberRow}>
-            <Text style={styles.memberRole}>{roleLabel(m.role)}</Text>
-            <Text style={styles.memberId} numberOfLines={1}>
-              {m.user_id === user?.id
-                ? 'You'
-                : `${m.user_id.slice(0, 8)}…`}
-            </Text>
-          </View>
-        ))
+        members.map((m) => {
+          const canRemove = canManageTeam && m.role !== 'admin';
+          const busy = removeBusyId === m.id;
+          return (
+            <View key={m.id} style={styles.memberRow}>
+              <View style={styles.roleInfo}>
+                <Text style={styles.memberRole}>{roleLabel(m.role)}</Text>
+                <Text style={styles.memberId} numberOfLines={1}>
+                  {m.user_id === user?.id
+                    ? 'You'
+                    : `${m.user_id.slice(0, 8)}…`}
+                </Text>
+              </View>
+              {canRemove ? (
+                <Pressable
+                  style={[styles.roleBtn, busy && styles.disabled]}
+                  disabled={busy}
+                  onPress={() => void handleRemoveMembership(m)}
+                >
+                  <Text style={styles.roleBtnText}>
+                    {busy ? '…' : 'Remove'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          );
+        })
       )}
 
       <Text style={styles.hint}>
@@ -527,6 +489,7 @@ const styles = StyleSheet.create({
   },
   memberRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
     paddingVertical: 10,

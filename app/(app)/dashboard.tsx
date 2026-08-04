@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -10,10 +12,16 @@ import {
 } from 'react-native';
 import { Redirect, router, Stack, useFocusEffect } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
+import { confirmAction } from '@/lib/confirm';
+import {
+  copyRosterFromServer,
+  defaultCopyName,
+} from '@/lib/copyRoster';
 import { useLayout } from '@/lib/layout';
+import { clearOfflineCacheForRoster } from '@/lib/offline/clearRosterCache';
 import { alertRequiresOnline } from '@/lib/offline/gate';
 import { useIsOnline } from '@/lib/offline/connectivity';
-import { createRoster } from '@/lib/rosters';
+import { createRoster, deleteRoster } from '@/lib/rosters';
 import { listMyMemberships, roleLabel } from '@/lib/rosterMembers';
 import {
   acceptRosterInvite,
@@ -22,6 +30,57 @@ import {
 } from '@/lib/rosterInvites';
 import type { RosterMembership } from '@/lib/types';
 import { colors, layout } from '@/constants/theme';
+
+function canManageTeam(m: RosterMembership): boolean {
+  return m.isOwner || m.roles.includes('admin');
+}
+
+function promptTeamName(defaultName: string): Promise<string | null> {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    const next = window.prompt('Name for the copied team', defaultName);
+    if (next == null) return Promise.resolve(null);
+    const trimmed = next.trim();
+    return Promise.resolve(trimmed.length > 0 ? trimmed : null);
+  }
+  // iOS supports Alert.prompt; Android falls back to confirming the default name.
+  const promptFn = (
+    Alert as typeof Alert & {
+      prompt?: (
+        title: string,
+        message?: string,
+        callbackOrButtons?: unknown,
+        type?: string,
+        defaultValue?: string
+      ) => void;
+    }
+  ).prompt;
+  if (typeof promptFn === 'function') {
+    return new Promise((resolve) => {
+      promptFn(
+        'Copy team',
+        'Name for the copied team',
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+          {
+            text: 'Copy',
+            onPress: (value?: string) => {
+              const trimmed = (value ?? '').trim();
+              resolve(trimmed.length > 0 ? trimmed : null);
+            },
+          },
+        ],
+        'plain-text',
+        defaultName
+      );
+    });
+  }
+  return new Promise((resolve) => {
+    Alert.alert('Copy team', `Create “${defaultName}”?`, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+      { text: 'Copy', onPress: () => resolve(defaultName) },
+    ]);
+  });
+}
 
 type ListItem =
   | { kind: 'header'; key: string; title: string }
@@ -40,6 +99,7 @@ export default function DashboardScreen() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [acceptBusyId, setAcceptBusyId] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -156,21 +216,115 @@ export default function DashboardScreen() {
     }
   }
 
+  async function handleCopy(item: RosterMembership) {
+    if (!user) return;
+    if (!isOnline) {
+      alertRequiresOnline('Copying a team');
+      return;
+    }
+    const name = await promptTeamName(defaultCopyName(item.roster.name));
+    if (!name) return;
+    confirmAction({
+      title: 'Copy team?',
+      message: `Create “${name}” as a full copy? You will be Admin of the new team.`,
+      confirmLabel: 'Copy',
+      onConfirm: () => {
+        void (async () => {
+          setActionBusyId(item.roster.id);
+          setError(null);
+          try {
+            const created = await copyRosterFromServer({
+              sourceRosterId: item.roster.id,
+              newName: name,
+              ownerUserId: user.id,
+            });
+            await refresh();
+            router.push(`/roster/${created.id}`);
+          } catch (e) {
+            setError(e instanceof Error ? e.message : 'Failed to copy team');
+          } finally {
+            setActionBusyId(null);
+          }
+        })();
+      },
+    });
+  }
+
+  function handleDelete(item: RosterMembership) {
+    if (!isOnline) {
+      alertRequiresOnline('Deleting a team');
+      return;
+    }
+    confirmAction({
+      title: 'Delete team?',
+      message: `Delete “${item.roster.name}”? This cannot be undone.`,
+      confirmLabel: 'Continue',
+      onConfirm: () => {
+        confirmAction({
+          title: 'Really delete?',
+          message: `Permanently delete “${item.roster.name}” and all players, depth, and assignments?`,
+          confirmLabel: 'Delete',
+          onConfirm: () => {
+            void (async () => {
+              setActionBusyId(item.roster.id);
+              setError(null);
+              try {
+                await deleteRoster(item.roster.id);
+                await clearOfflineCacheForRoster(item.roster.id);
+                await refresh();
+              } catch (e) {
+                setError(
+                  e instanceof Error ? e.message : 'Failed to delete team'
+                );
+              } finally {
+                setActionBusyId(null);
+              }
+            })();
+          },
+        });
+      },
+    });
+  }
+
   function renderMembership({ item }: { item: RosterMembership }) {
     const rolesText = item.roles.map(roleLabel).join(', ');
+    const manage = canManageTeam(item);
+    const busy = actionBusyId === item.roster.id;
     return (
-      <Pressable
-        style={[styles.card, isPhone && styles.cardPhone]}
-        onPress={() => router.push(`/roster/${item.roster.id}`)}
-      >
-        <Text style={styles.cardTitle}>{item.roster.name}</Text>
-        <Text style={styles.cardMeta}>
-          {rolesText}
-          {' · '}
-          Created {new Date(item.roster.created_at).toLocaleDateString()}
-          {' · Open'}
-        </Text>
-      </Pressable>
+      <View style={[styles.card, isPhone && styles.cardPhone]}>
+        <Pressable
+          onPress={() => router.push(`/roster/${item.roster.id}`)}
+          disabled={busy}
+        >
+          <Text style={styles.cardTitle}>{item.roster.name}</Text>
+          <Text style={styles.cardMeta}>
+            {rolesText}
+            {' · '}
+            Created {new Date(item.roster.created_at).toLocaleDateString()}
+            {' · Open'}
+          </Text>
+        </Pressable>
+        {manage ? (
+          <View style={styles.cardActions}>
+            <Pressable
+              style={[styles.secondaryBtn, busy && styles.disabled]}
+              disabled={busy}
+              onPress={() => void handleCopy(item)}
+            >
+              <Text style={styles.secondaryBtnText}>
+                {busy ? '…' : 'Copy'}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.deleteBtn, busy && styles.disabled]}
+              disabled={busy}
+              onPress={() => handleDelete(item)}
+            >
+              <Text style={styles.deleteBtnText}>Delete</Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
     );
   }
 
@@ -380,6 +534,36 @@ const styles = StyleSheet.create({
     marginTop: 4,
     color: colors.muted,
     fontSize: 13,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  secondaryBtn: {
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  secondaryBtnText: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  deleteBtn: {
+    borderWidth: 1,
+    borderColor: colors.danger,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  deleteBtnText: {
+    color: colors.danger,
+    fontWeight: '700',
+    fontSize: 14,
   },
   acceptBtn: {
     marginTop: 12,

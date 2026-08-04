@@ -1,8 +1,11 @@
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, usePathname } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RoleSwitcher } from '@/components/RoleSwitcher';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
+import { useLayout } from '@/lib/layout';
 import { useOffline } from '@/lib/offline/OfflineContext';
 import { colors } from '@/constants/theme';
 
@@ -20,8 +23,10 @@ function userLabel(email: string | undefined) {
 
 export function RosterSubnav({ rosterId }: Props) {
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
+  const { isTablet } = useLayout();
   const { user, signOut } = useAuth();
-  const { isAdmin, isAdminLiveMode } = useActiveRole();
+  const { isAdmin } = useActiveRole();
   const {
     isOnline,
     isSyncing,
@@ -30,30 +35,67 @@ export function RosterSubnav({ rosterId }: Props) {
     offlineReady,
     retrySync,
   } = useOffline();
+  const [printMenuOpen, setPrintMenuOpen] = useState(false);
   const onAssign = pathname.includes('/assign');
   const onPlanner = pathname.includes('/planner');
   const onDepth = pathname.includes('/depth');
   const onRosters = pathname.includes('/rosters');
   const onTeam = pathname.includes('/team');
+  const onPrintView = onRosters || onPlanner;
   const onPlayers =
     !onAssign && !onPlanner && !onDepth && !onRosters && !onTeam;
+
+  useEffect(() => {
+    setPrintMenuOpen(false);
+  }, [pathname]);
 
   async function handleSignOut() {
     await signOut();
     router.replace('/(auth)/sign-in');
   }
 
+  function goPrint(path: 'rosters' | 'planner') {
+    setPrintMenuOpen(false);
+    router.replace(`/roster/${rosterId}/${path}`);
+  }
+
   return (
     <View style={styles.wrap}>
-      <View style={styles.bar}>
+      <View
+        style={[
+          styles.bar,
+          {
+            // iPad status / multitasking chrome needs extra clearance.
+            paddingTop: Math.max(insets.top, 8) + (isTablet ? 20 : 8),
+            paddingLeft: Math.max(insets.left, 20),
+            paddingRight: Math.max(insets.right, 20),
+          },
+        ]}
+      >
         <View style={styles.inner}>
           <View style={styles.side}>
             <Pressable
               style={styles.dashboard}
               onPress={() => router.replace('/dashboard')}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               <Text style={styles.dashboardText}>Dashboard</Text>
             </Pressable>
+            {isAdmin ? (
+              <Pressable
+                style={[styles.teamLink, onTeam && styles.teamLinkActive]}
+                onPress={() => router.replace(`/roster/${rosterId}/team`)}
+              >
+                <Text
+                  style={[
+                    styles.teamLinkText,
+                    onTeam && styles.teamLinkTextActive,
+                  ]}
+                >
+                  Team / Invites
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
 
           <View style={styles.tabs}>
@@ -74,14 +116,6 @@ export function RosterSubnav({ rosterId }: Props) {
               </Text>
             </Pressable>
             <Pressable
-              style={[styles.tab, onRosters && styles.tabActive]}
-              onPress={() => router.replace(`/roster/${rosterId}/rosters`)}
-            >
-              <Text style={[styles.tabText, onRosters && styles.tabTextActive]}>
-                Rosters
-              </Text>
-            </Pressable>
-            <Pressable
               style={[styles.tab, onAssign && styles.tabActive]}
               onPress={() => router.replace(`/roster/${rosterId}/assign`)}
             >
@@ -89,24 +123,57 @@ export function RosterSubnav({ rosterId }: Props) {
                 Assign Squads
               </Text>
             </Pressable>
-            <Pressable
-              style={[styles.tab, onPlanner && styles.tabActive]}
-              onPress={() => router.replace(`/roster/${rosterId}/planner`)}
-            >
-              <Text style={[styles.tabText, onPlanner && styles.tabTextActive]}>
-                Squad Planner
-              </Text>
-            </Pressable>
-            {isAdmin ? (
+            <View style={styles.printWrap}>
               <Pressable
-                style={[styles.tab, onTeam && styles.tabActive]}
-                onPress={() => router.replace(`/roster/${rosterId}/team`)}
+                style={[styles.tab, onPrintView && styles.tabActive]}
+                onPress={() => setPrintMenuOpen((open) => !open)}
               >
-                <Text style={[styles.tabText, onTeam && styles.tabTextActive]}>
-                  Team
+                <Text
+                  style={[
+                    styles.tabText,
+                    onPrintView && styles.tabTextActive,
+                  ]}
+                >
+                  {`Print View${printMenuOpen ? ' ▲' : ' ▼'}`}
                 </Text>
               </Pressable>
-            ) : null}
+              {printMenuOpen ? (
+                <View style={styles.printMenu}>
+                  <Pressable
+                    style={[
+                      styles.printItem,
+                      onRosters && styles.printItemActive,
+                    ]}
+                    onPress={() => goPrint('rosters')}
+                  >
+                    <Text
+                      style={[
+                        styles.printItemText,
+                        onRosters && styles.printItemTextActive,
+                      ]}
+                    >
+                      Rosters
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.printItem,
+                      onPlanner && styles.printItemActive,
+                    ]}
+                    onPress={() => goPrint('planner')}
+                  >
+                    <Text
+                      style={[
+                        styles.printItemText,
+                        onPlanner && styles.printItemTextActive,
+                      ]}
+                    >
+                      Squad Planner
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
           </View>
 
           <View style={[styles.side, styles.userSide]}>
@@ -156,14 +223,6 @@ export function RosterSubnav({ rosterId }: Props) {
           </Text>
         </Pressable>
       ) : null}
-      {isAdminLiveMode ? (
-        <View style={[styles.liveBanner, styles.liveBannerAssign]}>
-          <Text style={styles.liveBannerText}>
-            Live coaches — All Players, Depth, Rosters, and Assign edit the
-            three head-coach master rosters.
-          </Text>
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -173,32 +232,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
     backgroundColor: colors.bg,
+    zIndex: 20,
   },
   bar: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
     paddingBottom: 8,
     alignItems: 'center',
-  },
-  liveBanner: {
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    backgroundColor: '#fff7ed',
-    borderTopWidth: 1,
-    borderTopColor: '#fdba74',
-    alignItems: 'center',
-  },
-  liveBannerAssign: {
-    backgroundColor: '#fef2f2',
-    borderTopColor: '#fca5a5',
-  },
-  liveBannerText: {
-    width: '100%',
-    maxWidth: 960,
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '600',
-    lineHeight: 18,
+    zIndex: 20,
   },
   offlineBanner: {
     paddingHorizontal: 20,
@@ -242,27 +281,52 @@ const styles = StyleSheet.create({
   },
   side: {
     flex: 1,
-    minWidth: 140,
+    minWidth: 160,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    flexWrap: 'wrap',
   },
   userSide: {
     justifyContent: 'flex-end',
     gap: 10,
   },
   dashboard: {
-    paddingVertical: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    minHeight: 44,
+    justifyContent: 'center',
   },
   dashboardText: {
     color: colors.primary,
     fontWeight: '800',
     fontSize: 15,
   },
+  teamLink: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+  },
+  teamLinkActive: {
+    backgroundColor: colors.primary,
+  },
+  teamLinkText: {
+    color: colors.primary,
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  teamLinkTextActive: {
+    color: colors.primaryText,
+  },
   tabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
     gap: 8,
+    zIndex: 30,
   },
   tab: {
     paddingHorizontal: 14,
@@ -283,6 +347,42 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: colors.primaryText,
+  },
+  printWrap: {
+    position: 'relative',
+    zIndex: 40,
+  },
+  printMenu: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    marginTop: 4,
+    minWidth: 160,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+    shadowColor: '#15202b',
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+  },
+  printItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  printItemActive: {
+    backgroundColor: '#e8f5ef',
+  },
+  printItemText: {
+    fontWeight: '700',
+    color: colors.text,
+    fontSize: 14,
+  },
+  printItemTextActive: {
+    color: colors.primary,
   },
   userEmail: {
     color: colors.muted,

@@ -74,26 +74,6 @@ export async function listMyRolesOnRoster(
   return (data ?? []).map((r) => r.role as RosterRole);
 }
 
-/** Admin self-assign / assign a role seat to a user (Phase 1 testing). */
-export async function addRosterRole(params: {
-  rosterId: string;
-  userId: string;
-  role: RosterRole;
-}): Promise<RosterMember> {
-  const { data, error } = await supabase
-    .from('roster_members')
-    .insert({
-      roster_id: params.rosterId,
-      user_id: params.userId,
-      role: params.role,
-    })
-    .select('*')
-    .single();
-
-  if (error) throw error;
-  return data as RosterMember;
-}
-
 export async function removeRosterRole(params: {
   rosterId: string;
   userId: string;
@@ -110,15 +90,6 @@ export async function removeRosterRole(params: {
     .eq('role', params.role);
 
   if (error) throw error;
-}
-
-export function canSelfAssignRole(
-  role: RosterRole,
-  myRoles: RosterRole[]
-): boolean {
-  if (!myRoles.includes('admin')) return false;
-  if (role === 'admin') return false;
-  return true;
 }
 
 export function isHeadCoachRole(role: RosterRole): boolean {

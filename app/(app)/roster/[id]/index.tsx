@@ -8,7 +8,6 @@ import {
   View,
 } from 'react-native';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
-import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
 import { playersInRankPool } from '@/lib/assignPools';
 import { alertRequiresOnline } from '@/lib/offline/gate';
@@ -19,22 +18,13 @@ import {
   type GradeFilter,
 } from '@/lib/availableRank';
 import { confirmAction } from '@/lib/confirm';
-import { useMasterConflicts } from '@/lib/MasterConflictContext';
 import { useRosterData } from '@/lib/RosterDataContext';
 import { useLayout } from '@/lib/layout';
-import { mergeLiveSquadPlayers } from '@/lib/adminLiveRoster';
-import {
-  isMasterKind,
-  masterKindForSquad,
-  MASTER_KINDS,
-} from '@/lib/masterConflicts';
-import { ownSquadForWorkspace } from '@/lib/masterWorkspace';
 import {
   CLASS_ORDER_DESC,
   countBySchoolYear,
 } from '@/lib/schoolYear';
 import {
-  buildFormationSectionFromPlayers,
   buildViewsFromCache,
   getSquadDepthViewFromCache,
   type SquadPlayerSection,
@@ -113,15 +103,7 @@ export default function RosterPlayersScreen() {
   const { q } = useLocalSearchParams<{ id: string; q?: string }>();
   const { session, loading: authLoading, configured } = useAuth();
   const { isPhone, isCompact } = useLayout();
-  const { workspaceKind, isAdminLiveMode } = useActiveRole();
   const { isOnline } = useOffline();
-  const {
-    officialPlayers,
-    depthForMaster,
-    otherMasterKinds,
-    masterLabel,
-    canonicalSquad,
-  } = useMasterConflicts();
   const {
     rosterId,
     roster,
@@ -152,13 +134,10 @@ export default function RosterPlayersScreen() {
   const [sortingAvailable, setSortingAvailable] = useState(false);
   const [gradeFilter, setGradeFilter] = useState<GradeFilter>('all');
 
-  const isMasterView =
-    workspaceKind != null && isMasterKind(workspaceKind);
-  const ownSquad = ownSquadForWorkspace(workspaceKind);
-  const addToTeams = useMemo((): SquadTeam[] => {
-    if (isMasterView && ownSquad) return [ownSquad];
-    return SQUAD_TEAMS.map((t) => t.id);
-  }, [isMasterView, ownSquad]);
+  const addToTeams = useMemo(
+    (): SquadTeam[] => SQUAD_TEAMS.map((t) => t.id),
+    []
+  );
   const availableOrdered = useMemo(
     () => orderAvailablePlayers(playersInRankPool(players, 'available')),
     [players]
@@ -186,100 +165,14 @@ export default function RosterPlayersScreen() {
   }, [loading, availableOrdered.length, ensureAvailableRanks]);
 
   const sections = useMemo(() => {
-    // Admin Live: every master claim (incl. duals) + always show all 3 team shells.
-    if (isAdminLiveMode) {
-      const next: SquadPlayerSection[] = [];
-      for (const kind of MASTER_KINDS) {
-        const squad = canonicalSquad(kind);
-        const label =
-          SQUAD_TEAMS.find((t) => t.id === squad)?.label ?? masterLabel(kind);
-        const list = mergeLiveSquadPlayers({
-          squad,
-          claimedPlayers: officialPlayers(kind, players),
-          rosterPlayers: players,
-        });
-        next.push(
-          buildFormationSectionFromPlayers(
-            label,
-            squad,
-            list,
-            depthCache[squad] ?? depthForMaster(kind)
-          )
-        );
-      }
-      const available = orderAvailablePlayers(
-        playersInRankPool(players, 'available')
-      );
-      next.push({
-        title: 'Available',
-        rankPool: 'available',
-        rows: available.map((p) => ({ key: p.id, player: p })),
-      });
-      const unavailable = orderAvailablePlayers(
-        playersInRankPool(players, 'unavailable')
-      );
-      if (unavailable.length > 0) {
-        next.push({
-          title: 'Unavailable',
-          rankPool: 'unavailable',
-          rows: unavailable.map((p) => ({ key: p.id, player: p })),
-        });
-      }
-      return next;
-    }
-
     // Always paint squad shells (vacant XI + empty Subs) — never collapse to a spinner.
-    const alwaysSquads: SquadTeam[] =
-      isMasterView && ownSquad
-        ? [ownSquad]
-        : SQUAD_TEAMS.map((t) => t.id);
-    let next = buildViewsFromCache(
+    return buildViewsFromCache(
       players,
       depthCache,
       undefined,
-      alwaysSquads
+      SQUAD_TEAMS.map((t) => t.id)
     ).squadSections;
-
-    if (isMasterView && ownSquad) {
-      const ownLabel =
-        SQUAD_TEAMS.find((t) => t.id === ownSquad)?.label ?? ownSquad;
-      next = next.filter(
-        (section) =>
-          section.title === 'Available' ||
-          section.title === 'Unavailable' ||
-          section.squadTeam === ownSquad ||
-          section.title === ownLabel
-      );
-      for (const kind of otherMasterKinds) {
-        const squad = canonicalSquad(kind);
-        const list = officialPlayers(kind, players).map((p) => ({
-          ...p,
-          squad_team: squad,
-        }));
-        next.push(
-          buildFormationSectionFromPlayers(
-            masterLabel(kind),
-            squad,
-            list,
-            depthForMaster(kind),
-            { readOnly: true }
-          )
-        );
-      }
-    }
-    return next;
-  }, [
-    players,
-    depthCache,
-    isMasterView,
-    isAdminLiveMode,
-    ownSquad,
-    otherMasterKinds,
-    officialPlayers,
-    depthForMaster,
-    masterLabel,
-    canonicalSquad,
-  ]);
+  }, [players, depthCache]);
 
   const filteredSections = useMemo(() => {
     const withGrade = sections.map((section) => {
@@ -304,20 +197,12 @@ export default function RosterPlayersScreen() {
         starterElsewhereByPlayer: {} as Record<string, string[]>,
       };
     }
-    const kind = masterKindForSquad(starterSlot.squadTeam);
-    const squadPlayers = isAdminLiveMode
-      ? mergeLiveSquadPlayers({
-          squad: starterSlot.squadTeam,
-          claimedPlayers: officialPlayers(kind, players),
-          rosterPlayers: players,
-        })
-      : players.filter((p) => p.squad_team === starterSlot.squadTeam);
-    const cache = isAdminLiveMode
-      ? (depthCache[starterSlot.squadTeam] ?? depthForMaster(kind))
-      : depthCache[starterSlot.squadTeam];
+    const squadPlayers = players.filter(
+      (p) => p.squad_team === starterSlot.squadTeam
+    );
     const view = getSquadDepthViewFromCache({
       squadPlayers,
-      cache,
+      cache: depthCache[starterSlot.squadTeam],
       positionNumber: starterSlot.positionGroup,
     });
     const currentGroup = getDepthPositionGroup(starterSlot.positionGroup);
@@ -334,16 +219,7 @@ export default function RosterPlayersScreen() {
       depthPlayers: view.orderedAtPosition,
       starterElsewhereByPlayer,
     };
-  }, [
-    starterSlot,
-    depthReady,
-    players,
-    depthCache,
-    isAdminLiveMode,
-    officialPlayers,
-    depthForMaster,
-  ]);
-
+  }, [starterSlot, depthReady, players, depthCache]);
   if (!authLoading && (!configured || !session)) {
     return <Redirect href="/(auth)/sign-in" />;
   }

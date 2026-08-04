@@ -278,6 +278,7 @@ export function StarterSlotSheet({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [swappingId, setSwappingId] = useState<string | null>(null);
+  const [playerSearch, setPlayerSearch] = useState('');
 
   useEffect(() => {
     if (!player) {
@@ -302,20 +303,38 @@ export function StarterSlotSheet({
       setSaving(false);
       setDeleting(false);
       setError(null);
+      setPlayerSearch('');
     }
   }, [visible, selection]);
 
   const groups = useMemo((): CandidateGroup[] => {
     if (!selection) return [];
     const label = formatDepthGroupLabel(selection.positionGroup);
-    return buildAssignGroups(
+    const all = buildAssignGroups(
       sections,
       selection.squadTeam,
       label,
       depthPlayers,
       getDepthStarterCount(selection.positionGroup)
     );
-  }, [sections, selection, depthPlayers]);
+    const q = playerSearch.trim().toLowerCase();
+    if (!q) return all;
+    return all
+      .map((group) => ({
+        ...group,
+        rows: group.rows.filter((row) => {
+          const first = (row.player.first_name ?? '').toLowerCase();
+          const last = (row.player.last_name ?? '').toLowerCase();
+          return (
+            first.includes(q) ||
+            last.includes(q) ||
+            `${last}, ${first}`.includes(q) ||
+            `${first} ${last}`.includes(q)
+          );
+        }),
+      }))
+      .filter((group) => group.rows.length > 0);
+  }, [sections, selection, depthPlayers, playerSearch]);
 
   /** Other CB slot on this squad — can't assign the same player to both. */
   const otherCbPlayerId = useMemo(() => {
@@ -562,6 +581,27 @@ export function StarterSlotSheet({
             <Text style={styles.colTitle}>
               {player ? 'Swap into' : 'Assign to'} {slot.label}
             </Text>
+            <View style={styles.searchWrap}>
+              <TextInput
+                style={styles.searchInput}
+                value={playerSearch}
+                onChangeText={setPlayerSearch}
+                placeholder="Search players by name"
+                placeholderTextColor={colors.muted}
+                autoCorrect={false}
+                autoCapitalize="none"
+                clearButtonMode="while-editing"
+              />
+              {playerSearch.length > 0 ? (
+                <Pressable
+                  onPress={() => setPlayerSearch('')}
+                  hitSlop={8}
+                  style={styles.searchClear}
+                >
+                  <Text style={styles.searchClearText}>Clear</Text>
+                </Pressable>
+              ) : null}
+            </View>
             <View style={styles.legendRow}>
               <View style={styles.legendSwatch} />
               <Text style={styles.legendText}>
@@ -574,7 +614,11 @@ export function StarterSlotSheet({
               keyboardShouldPersistTaps="handled"
             >
               {groups.length === 0 ? (
-                <Text style={styles.emptyList}>No players on this roster.</Text>
+                <Text style={styles.emptyList}>
+                  {playerSearch.trim()
+                    ? 'No players match that name.'
+                    : 'No players on this roster.'}
+                </Text>
               ) : (
                 groups.map((group) => (
                   <View key={group.key} style={styles.group}>
@@ -765,6 +809,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 12,
     paddingBottom: 8,
+  },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+  },
+  searchInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: colors.text,
+    backgroundColor: colors.surface,
+  },
+  searchClear: {
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  searchClearText: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: 14,
   },
   legendRow: {
     flexDirection: 'row',

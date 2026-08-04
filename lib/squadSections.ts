@@ -295,12 +295,11 @@ function sectionForSquad(
 
 function positionSectionForSquad(
   title: string,
+  squadTeam: SquadTeam,
   atPosition: Player[],
   teamEntries: DepthChartEntry[],
   positionNumber: number
-): SquadPlayerSection | null {
-  if (atPosition.length === 0) return null;
-
+): SquadPlayerSection {
   const canonical = getDepthCanonicalPosition(positionNumber);
   const starterCount = getDepthStarterCount(positionNumber);
   const positionEntries = teamEntries.filter(
@@ -314,7 +313,7 @@ function positionSectionForSquad(
     role: index < starterCount ? 'Starter' : 'Sub',
   }));
 
-  return { title, rows };
+  return { title, squadTeam, rows };
 }
 
 function viewFromCache(
@@ -484,13 +483,18 @@ export function buildViewsFromCache(
       const atPosition = squadPlayers.filter((p) =>
         playerInDepthGroup(p.positions, positionNumber)
       );
-      const posSection = positionSectionForSquad(
-        team.label,
-        atPosition,
-        view.teamEntries,
-        positionNumber
-      );
-      if (posSection) positionSections.push(posSection);
+      // Always show team shells when requested (Depth "All players" middle pane).
+      if (atPosition.length > 0 || always.has(team.id)) {
+        positionSections.push(
+          positionSectionForSquad(
+            team.label,
+            team.id,
+            atPosition,
+            view.teamEntries,
+            positionNumber
+          )
+        );
+      }
     }
   }
 

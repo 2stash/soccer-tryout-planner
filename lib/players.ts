@@ -464,56 +464,6 @@ export function subscribeToPlayers(
     });
 }
 
-/**
- * Admin Live: watch identity + all three master assignment/depth/sub tables
- * so remote coach edits refresh the Live overlay.
- */
-export function subscribeToLiveMasterRoster(
-  rosterId: string,
-  masterWorkspaceIds: string[],
-  onChange: () => void,
-  onStatus?: (status: string) => void
-): RealtimeChannel {
-  const idsKey = [...masterWorkspaceIds].sort().join(',');
-  const topic = `live-roster:${rosterId}:${idsKey}:${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
-
-  let channel = supabase.channel(topic).on(
-    'postgres_changes',
-    {
-      event: '*',
-      schema: 'public',
-      table: 'players',
-      filter: `roster_id=eq.${rosterId}`,
-    },
-    () => onChange()
-  );
-
-  for (const workspaceId of masterWorkspaceIds) {
-    for (const table of [
-      'player_assignments',
-      'depth_chart_entries',
-      'sub_order_entries',
-    ] as const) {
-      channel = channel.on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table,
-          filter: `workspace_id=eq.${workspaceId}`,
-        },
-        () => onChange()
-      );
-    }
-  }
-
-  return channel.subscribe((status) => {
-    onStatus?.(status);
-  });
-}
-
 export async function unsubscribePlayers(channel: RealtimeChannel): Promise<void> {
   await supabase.removeChannel(channel);
 }

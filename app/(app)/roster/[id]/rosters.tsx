@@ -7,12 +7,8 @@ import {
   View,
 } from 'react-native';
 import { Redirect } from 'expo-router';
-import { AvailabilityTags } from '@/components/AvailabilityTags';
 import { FormationPitchPicker } from '@/components/FormationPitchPicker';
-import { MasterConflictChips } from '@/components/MasterConflictChips';
-import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
-import { useMasterConflicts } from '@/lib/MasterConflictContext';
 import { useRosterData } from '@/lib/RosterDataContext';
 import { useLayout } from '@/lib/layout';
 import { getFormationStartersByNumber } from '@/lib/depthChart';
@@ -20,13 +16,6 @@ import {
   playersInRankPool,
   type RankPool,
 } from '@/lib/assignPools';
-import { mergeLiveSquadPlayers } from '@/lib/adminLiveRoster';
-import {
-  isMasterKind,
-  masterKindForSquad,
-  type MasterKind,
-} from '@/lib/masterConflicts';
-import { ownSquadForWorkspace } from '@/lib/masterWorkspace';
 import { orderAvailablePlayers } from '@/lib/availableRank';
 import { getSquadDepthViewFromCache } from '@/lib/squadSections';
 import { formatPositionsShort } from '@/lib/positions';
@@ -38,16 +27,7 @@ import { colors, layout } from '@/constants/theme';
 /** Pitch + subs side-by-side (tablet landscape / desktop). */
 const SIDE_BY_SIDE_MIN = 720;
 
-type MasterViewKey = `master:${MasterKind}`;
-type ViewKey = SquadTeam | 'pools' | MasterViewKey;
-
-function isMasterViewKey(key: ViewKey): key is MasterViewKey {
-  return typeof key === 'string' && key.startsWith('master:');
-}
-
-function masterKindFromView(key: MasterViewKey): MasterKind {
-  return key.slice('master:'.length) as MasterKind;
-}
+type ViewKey = SquadTeam | 'pools';
 
 function playerMeta(player: Player) {
   const pos = formatPositionsShort(player.positions);
@@ -57,55 +37,26 @@ function playerMeta(player: Player) {
 export default function RostersScreen() {
   const { session, loading: authLoading, configured } = useAuth();
   const { width, isPhone, isCompact, isDesktop } = useLayout();
-  const { workspaceKind, isAdminLiveMode } = useActiveRole();
-  const {
-    officialPlayers,
-    depthForMaster,
-    otherMasterKinds,
-    masterLabel,
-    canonicalSquad,
-    loading: masterClaimsLoading,
-  } = useMasterConflicts();
   const { roster, players, depthCache, loading, depthReady, error } =
     useRosterData();
-  const isMasterView =
-    workspaceKind != null && isMasterKind(workspaceKind);
-  const ownSquad = ownSquadForWorkspace(workspaceKind);
 
-  const viewTabs = useMemo((): {
-    key: ViewKey;
-    label: string;
-    short: string;
-  }[] => {
-    if (isMasterView && ownSquad) {
-      const own = SQUAD_TEAMS.find((t) => t.id === ownSquad)!;
-      return [
-        {
-          key: ownSquad,
-          label: own.label,
-          short:
-            ownSquad === 'varsity' ? 'Var' : ownSquad === 'jv' ? 'JV' : 'Fr',
-        },
-        ...otherMasterKinds.map((kind) => ({
-          key: `master:${kind}` as MasterViewKey,
-          label: masterLabel(kind),
-          short: masterLabel(kind),
-        })),
-        { key: 'pools', label: 'Avail / Unavail', short: 'Pool' },
-      ];
-    }
-    return [
+  const viewTabs = useMemo(
+    (): {
+      key: ViewKey;
+      label: string;
+      short: string;
+    }[] => [
       ...SQUAD_TEAMS.map((t) => ({
         key: t.id as ViewKey,
         label: t.label,
-        short:
-          t.id === 'varsity' ? 'Var' : t.id === 'jv' ? 'JV' : 'Fr',
+        short: t.id === 'varsity' ? 'Var' : t.id === 'jv' ? 'JV' : 'Fr',
       })),
       { key: 'pools', label: 'Avail / Unavail', short: 'Pool' },
-    ];
-  }, [isMasterView, ownSquad, otherMasterKinds, masterLabel]);
+    ],
+    []
+  );
 
-  const [viewKey, setViewKey] = useState<ViewKey>(ownSquad ?? 'varsity');
+  const [viewKey, setViewKey] = useState<ViewKey>('varsity');
   useEffect(() => {
     if (!viewTabs.some((t) => t.key === viewKey)) {
       setViewKey(viewTabs[0]?.key ?? 'varsity');
@@ -115,10 +66,6 @@ export default function RostersScreen() {
   const sideBySide = !isPhone && width >= SIDE_BY_SIDE_MIN;
   const pitchCompact = !isDesktop;
   const showingPools = viewKey === 'pools';
-  const showingOtherMaster = isMasterViewKey(viewKey);
-  const readonlyMasterKind = showingOtherMaster
-    ? masterKindFromView(viewKey)
-    : null;
 
   const availablePlayers = useMemo(
     () => orderAvailablePlayers(playersInRankPool(players, 'available')),
@@ -130,64 +77,19 @@ export default function RostersScreen() {
     [players]
   );
 
-  /** Own squad tab, or another master's canonical squad (read-only). */
   const squadTeam: SquadTeam | null = showingPools
     ? null
-    : showingOtherMaster && readonlyMasterKind
-      ? canonicalSquad(readonlyMasterKind)
-      : (viewKey as SquadTeam);
+    : (viewKey as SquadTeam);
 
   const squadPlayers = useMemo(() => {
     if (!squadTeam) return [] as Player[];
-    if (showingOtherMaster && readonlyMasterKind) {
-      return officialPlayers(readonlyMasterKind, players).map((p) => ({
-        ...p,
-        squad_team: squadTeam,
-      }));
-    }
-    // Admin Live: claims + roster flatten (claims may lag a local assign).
-    if (isAdminLiveMode) {
-      const kind = masterKindForSquad(squadTeam);
-      return mergeLiveSquadPlayers({
-        squad: squadTeam,
-        claimedPlayers: officialPlayers(kind, players),
-        rosterPlayers: players,
-      });
-    }
     return players.filter((p) => p.squad_team === squadTeam);
-  }, [
-    players,
-    squadTeam,
-    showingOtherMaster,
-    readonlyMasterKind,
-    officialPlayers,
-    isAdminLiveMode,
-  ]);
+  }, [players, squadTeam]);
 
   const squadDepthCache = useMemo(() => {
     if (!squadTeam) return undefined;
-    if (showingOtherMaster && readonlyMasterKind) {
-      return depthForMaster(readonlyMasterKind);
-    }
-    if (isAdminLiveMode) {
-      return (
-        depthCache[squadTeam] ??
-        depthForMaster(masterKindForSquad(squadTeam))
-      );
-    }
     return depthCache[squadTeam];
-  }, [
-    squadTeam,
-    showingOtherMaster,
-    readonlyMasterKind,
-    depthForMaster,
-    depthCache,
-    isAdminLiveMode,
-  ]);
-
-  const squadDepthReady = showingOtherMaster
-    ? !masterClaimsLoading
-    : depthReady;
+  }, [squadTeam, depthCache]);
 
   const view = useMemo(() => {
     if (!squadTeam) {
@@ -214,11 +116,9 @@ export default function RostersScreen() {
   }, [squadPlayers, view.teamEntries, squadTeam]);
 
   const subs = view.subs;
-  const teamLabel = showingOtherMaster
-    ? masterLabel(readonlyMasterKind!)
-    : squadTeam
-      ? SQUAD_TEAMS.find((t) => t.id === squadTeam)?.label ?? squadTeam
-      : 'Available / Unavailable';
+  const teamLabel = squadTeam
+    ? SQUAD_TEAMS.find((t) => t.id === squadTeam)?.label ?? squadTeam
+    : 'Available / Unavailable';
   const classCounts = formatClassCounts(
     showingPools
       ? [...availablePlayers, ...unavailablePlayers]
@@ -234,9 +134,6 @@ export default function RostersScreen() {
   function tabCount(key: ViewKey) {
     if (key === 'pools') {
       return availablePlayers.length + unavailablePlayers.length;
-    }
-    if (isMasterViewKey(key)) {
-      return officialPlayers(masterKindFromView(key), players).length;
     }
     return players.filter((p) => p.squad_team === key).length;
   }
@@ -279,10 +176,7 @@ export default function RostersScreen() {
                   ]}
                 >
                   <Text
-                    style={[
-                      styles.subRank,
-                      pinned && styles.rankPinned,
-                    ]}
+                    style={[styles.subRank, pinned && styles.rankPinned]}
                   >
                     {pinned ? '★' : `#${index + 1}`}
                   </Text>
@@ -296,10 +190,6 @@ export default function RostersScreen() {
                         {meta}
                       </Text>
                     ) : null}
-                    {pool === 'available' || pool === 'unavailable' ? (
-                      <AvailabilityTags playerId={player.id} compact />
-                    ) : null}
-                    <MasterConflictChips playerId={player.id} compact />
                   </View>
                 </View>
               );
@@ -329,11 +219,9 @@ export default function RostersScreen() {
               <Text style={styles.subtitle}>
                 {showingPools
                   ? 'Available and Unavailable ranked lists'
-                  : showingOtherMaster
-                    ? `${teamLabel} starting XI and bench · read-only`
-                    : isPhone
-                      ? 'Starting XI and bench for game day'
-                      : 'Starting XI on the pitch · substitutes listed beside'}
+                  : isPhone
+                    ? 'Starting XI and bench for game day'
+                    : 'Starting XI on the pitch · substitutes listed beside'}
               </Text>
               {classCounts ? (
                 <Text style={styles.classCounts} numberOfLines={2}>
@@ -384,22 +272,16 @@ export default function RostersScreen() {
               {renderPoolList('available', availablePlayers)}
               {renderPoolList('unavailable', unavailablePlayers)}
             </View>
-          ) : !loading && squadDepthReady && squadPlayers.length === 0 ? (
+          ) : !loading && depthReady && squadPlayers.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyTitle}>No players on {teamLabel}</Text>
               <Text style={styles.emptyText}>
-                {showingOtherMaster
-                  ? 'This master has not claimed anyone yet.'
-                  : 'Assign players to this squad on Assign Squads.'}
+                Assign players to this squad on Assign Squads.
               </Text>
             </View>
           ) : (
             <View
-              style={[
-                styles.columns,
-                !sideBySide && styles.columnsStack,
-                showingOtherMaster && styles.columnsReadonly,
-              ]}
+              style={[styles.columns, !sideBySide && styles.columnsStack]}
             >
               <View
                 style={[
@@ -412,17 +294,12 @@ export default function RostersScreen() {
                 <View style={styles.colHeader}>
                   <Text style={styles.colTitle}>Starting XI</Text>
                   <View style={styles.colHeaderRight}>
-                    {showingOtherMaster ? (
-                      <Text style={styles.readOnlyBadge}>Read-only</Text>
-                    ) : null}
                     <Text style={styles.colCount}>{starterCount}/11</Text>
                   </View>
                 </View>
                 {!isPhone ? (
                   <Text style={styles.colHint}>
-                    {showingOtherMaster
-                      ? `${teamLabel} depth chart (live)`
-                      : 'Last names from the depth chart'}
+                    Last names from the depth chart
                   </Text>
                 ) : null}
                 <View
@@ -486,12 +363,6 @@ export default function RostersScreen() {
                                 {meta}
                               </Text>
                             ) : null}
-                            {!showingOtherMaster ? (
-                              <MasterConflictChips
-                                playerId={player.id}
-                                compact
-                              />
-                            ) : null}
                           </View>
                         </View>
                       );
@@ -511,11 +382,6 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.bg,
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   scroll: {
     flex: 1,
@@ -673,22 +539,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: colors.muted,
-  },
-  readOnlyBadge: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    overflow: 'hidden',
-  },
-  columnsReadonly: {
-    opacity: 0.9,
   },
   colHint: {
     fontSize: 12,

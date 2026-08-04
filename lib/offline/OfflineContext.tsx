@@ -11,31 +11,48 @@ import {
 import { AppState, type AppStateStatus } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
+import { useAuth } from '@/lib/AuthContext';
+import {
+  copyRosterFromSnapshot,
+  defaultOfflineCopyName,
+} from '@/lib/copyRoster';
 import { useIsOnline } from '@/lib/offline/connectivity';
+import { clearOfflineCacheForRoster } from '@/lib/offline/clearRosterCache';
 import {
   enqueueOutboxOp,
   loadOutbox,
   shiftOutbox,
+  clearOutbox,
 } from '@/lib/offline/outbox';
+import { loadRosterSnapshot } from '@/lib/offline/snapshot';
 import {
   newOpId,
   type OfflineOp,
   type OfflineOpInput,
   type OfflineScope,
+  type RosterSnapshot,
 } from '@/lib/offline/types';
 
 type ReplayFn = (op: OfflineOp) => Promise<void>;
 type DrainCompleteFn = () => Promise<void>;
 
+export type OfflineConflictChoice =
+  | 'keep_device'
+  | 'use_supabase'
+  | 'use_supabase_and_copy';
+
+type ConflictHandlers = {
+  getSnapshot: () => Promise<RosterSnapshot | null>;
+  getRosterName: () => string;
+  discardLocalAndPull: () => Promise<void>;
+};
+
 const MAX_AUTO_RETRIES = 5;
-/** Wait for radio after airplane mode before first attempt. */
 const RECONNECT_DRAIN_DELAY_MS = 1000;
-/** Hung Supabase calls after reconnect must not pin Syncing forever. */
 const OP_TIMEOUT_MS = 12_000;
 const REFRESH_TIMEOUT_MS = 15_000;
 
 function retryDelayMs(attemptIndex: number): number {
-  // 1s, 2s, 4s, 8s, 12s
   return Math.min(1000 * 2 ** attemptIndex, 12_000);
 }
 
@@ -63,19 +80,23 @@ type OfflineValue = {
   pendingCount: number;
   syncError: string | null;
   scope: OfflineScope | null;
-  /** True after the first outbox load for the current scope. */
   outboxReady: boolean;
-  /** True when writes should go to the outbox (offline or queue draining). */
   shouldQueueWrites: boolean;
-  /** True when core tryout editing is allowed offline (snapshot was loaded or online). */
   offlineReady: boolean;
   setOfflineReady: (ready: boolean) => void;
   clearSyncError: () => void;
   enqueue: (op: OfflineOpInput) => Promise<void>;
   registerReplay: (fn: ReplayFn | null) => void;
   registerDrainComplete: (fn: DrainCompleteFn | null) => void;
+  registerConflictHandlers: (handlers: ConflictHandlers | null) => void;
   retrySync: () => void;
   refreshPendingCount: () => Promise<void>;
+  /** True when user must choose Keep / Supabase / copy before drain. */
+  conflictVisible: boolean;
+  conflictRosterName: string;
+  conflictBusy: boolean;
+  conflictError: string | null;
+  resolveConflict: (choice: OfflineConflictChoice) => Promise<void>;
 };
 
 const OfflineContext = createContext<OfflineValue | null>(null);
@@ -84,9 +105,9 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   const {
     rosterId,
     activeWorkspaceId,
-    adminEditMode,
     loading: roleLoading,
   } = useActiveRole();
+  const { user } = useAuth();
   const isOnline = useIsOnline();
   const [pendingCount, setPendingCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -94,9 +115,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   const [offlineReady, setOfflineReady] = useState(false);
   const [outboxReady, setOutboxReady] = useState(false);
   const [drainNonce, setDrainNonce] = useState(0);
+  const [conflictVisible, setConflictVisible] = useState(false);
+  const [conflictBusy, setConflictBusy] = useState(false);
+  const [conflictError, setConflictError] = useState<string | null>(null);
+  const [conflictRosterName, setConflictRosterName] = useState('');
 
   const replayRef = useRef<ReplayFn | null>(null);
   const drainCompleteRef = useRef<DrainCompleteFn | null>(null);
+  const conflictHandlersRef = useRef<ConflictHandlers | null>(null);
   const drainingRef = useRef(false);
   const isOnlineRef = useRef(isOnline);
   isOnlineRef.current = isOnline;
@@ -105,18 +131,23 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   const wasOnlineRef = useRef(isOnline);
   const autoRetryAttemptRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** After user resolves conflict for this scope, auto-drain is allowed. */
+  const conflictResolvedScopeRef = useRef<string | null>(null);
+  const awaitingConflictRef = useRef(false);
 
+  // Outbox/snapshot keys are rosterId-only; allow scope before workspace resolves
+  // so the UI can hydrate instantly on iPad navigation.
   const scope = useMemo((): OfflineScope | null => {
-    if (!rosterId || !activeWorkspaceId) return null;
+    if (!rosterId) return null;
     return {
       rosterId,
-      workspaceId: activeWorkspaceId,
-      adminEditMode,
+      workspaceId: activeWorkspaceId ?? '',
     };
-  }, [rosterId, activeWorkspaceId, adminEditMode]);
+  }, [rosterId, activeWorkspaceId]);
 
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+  const writeReady = Boolean(activeWorkspaceId);
 
   const clearRetryTimer = useCallback(() => {
     if (retryTimerRef.current) {
@@ -135,27 +166,42 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     setPendingCount(ops.length);
   }, []);
 
+  const scopeRosterId = scope?.rosterId ?? null;
+
   useEffect(() => {
-    if (roleLoading || !scope) {
+    if (!scopeRosterId) {
       setOutboxReady(false);
       setPendingCount(0);
+      setConflictVisible(false);
+      awaitingConflictRef.current = false;
       return;
     }
     let active = true;
-    setOutboxReady(false);
-    void loadOutbox(scope).then((ops) => {
-      if (!active) return;
-      setPendingCount(ops.length);
-      setOutboxReady(true);
-    });
+    // Load by roster id only — workspace id is not part of the storage key.
+    void loadOutbox({ rosterId: scopeRosterId, workspaceId: '' }).then(
+      (ops) => {
+        if (!active) return;
+        setPendingCount(ops.length);
+        setOutboxReady(true);
+      }
+    );
     return () => {
       active = false;
     };
-  }, [roleLoading, scope]);
+  }, [scopeRosterId]);
+
+  // Reset conflict resolution when switching rosters.
+  useEffect(() => {
+    conflictResolvedScopeRef.current = null;
+    awaitingConflictRef.current = false;
+    setConflictVisible(false);
+    setConflictError(null);
+  }, [rosterId]);
 
   const enqueue = useCallback(async (op: OfflineOpInput) => {
     const s = scopeRef.current;
-    if (!s) throw new Error('No offline scope');
+    if (!s?.rosterId) throw new Error('No offline scope');
+    if (!s.workspaceId) throw new Error('Workspace not ready');
     const full: OfflineOp = {
       ...op,
       id: newOpId(),
@@ -168,9 +214,10 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   const scheduleAutoRetry = useCallback(
     (reason?: string) => {
       clearRetryTimer();
-      // Never leave Syncing stuck during the wait — banner shows pending count.
       setIsSyncing(false);
       if (!isOnlineRef.current) return false;
+      // Don't auto-retry while conflict UI is up.
+      if (awaitingConflictRef.current) return false;
       const attempt = autoRetryAttemptRef.current;
       if (attempt >= MAX_AUTO_RETRIES) {
         setSyncError(reason ?? 'Failed to sync offline changes');
@@ -192,6 +239,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     const s = scopeRef.current;
     if (!s || roleLoadingRef.current || drainingRef.current) return;
     if (!isOnlineRef.current) return;
+    if (awaitingConflictRef.current) return;
 
     const replay = replayRef.current;
     if (!replay) {
@@ -251,8 +299,6 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       await refreshPendingCount();
     }
 
-    // After a successful write drain, force-reconcile (RosterData drainComplete).
-    // Do NOT flip isSyncing here: that gated remote pulls/claims and hid desktop edits.
     if (wroteOps && !drainFailed && isOnlineRef.current) {
       const complete = drainCompleteRef.current;
       if (complete) {
@@ -265,13 +311,98 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshPendingCount, scheduleAutoRetry, clearRetryTimer]);
 
+  const openConflictIfNeeded = useCallback(async (): Promise<boolean> => {
+    const s = scopeRef.current;
+    if (!s || !isOnlineRef.current) return false;
+    if (conflictResolvedScopeRef.current === s.rosterId) return false;
+
+    const ops = await loadOutbox(s);
+    if (ops.length === 0) {
+      setPendingCount(0);
+      return false;
+    }
+    setPendingCount(ops.length);
+    const handlers = conflictHandlersRef.current;
+    setConflictRosterName(handlers?.getRosterName() ?? 'This team');
+    awaitingConflictRef.current = true;
+    setConflictVisible(true);
+    setConflictError(null);
+    return true;
+  }, []);
+
+  const resolveConflict = useCallback(
+    async (choice: OfflineConflictChoice) => {
+      const s = scopeRef.current;
+      if (!s || !user) return;
+      const handlers = conflictHandlersRef.current;
+      setConflictBusy(true);
+      setConflictError(null);
+      try {
+        if (choice === 'keep_device') {
+          conflictResolvedScopeRef.current = s.rosterId;
+          awaitingConflictRef.current = false;
+          setConflictVisible(false);
+          await drain();
+          return;
+        }
+
+        if (choice === 'use_supabase_and_copy') {
+          let snapshot =
+            (await handlers?.getSnapshot()) ?? (await loadRosterSnapshot(s));
+          if (!snapshot || snapshot.players.length === 0) {
+            throw new Error(
+              'No offline snapshot to copy. Choose Keep device or Use Supabase.'
+            );
+          }
+          const name = defaultOfflineCopyName(
+            snapshot.roster?.name ?? handlers?.getRosterName() ?? 'Team'
+          );
+          await copyRosterFromSnapshot({
+            snapshot,
+            newName: name,
+            ownerUserId: user.id,
+          });
+        }
+
+        // Discard local outbox + pull server for original team.
+        await clearOutbox(s);
+        setPendingCount(0);
+        if (handlers?.discardLocalAndPull) {
+          await handlers.discardLocalAndPull();
+        } else {
+          await clearOfflineCacheForRoster(s.rosterId);
+        }
+        conflictResolvedScopeRef.current = s.rosterId;
+        awaitingConflictRef.current = false;
+        setConflictVisible(false);
+        autoRetryAttemptRef.current = 0;
+        setSyncError(null);
+      } catch (e) {
+        setConflictError(
+          e instanceof Error ? e.message : 'Failed to resolve offline conflict'
+        );
+      } finally {
+        setConflictBusy(false);
+      }
+    },
+    [user, drain]
+  );
+
   const retrySync = useCallback(() => {
     clearRetryTimer();
     autoRetryAttemptRef.current = 0;
     setSyncError(null);
     setIsSyncing(false);
-    setDrainNonce((n) => n + 1);
-  }, [clearRetryTimer]);
+    // Manual retry after a failed drain (post-conflict) — allow drain.
+    if (conflictResolvedScopeRef.current === scopeRef.current?.rosterId) {
+      setDrainNonce((n) => n + 1);
+      return;
+    }
+    // If conflict not resolved yet, re-open / nudge.
+    void openConflictIfNeeded().then((opened) => {
+      if (!opened) setDrainNonce((n) => n + 1);
+    });
+  }, [clearRetryTimer, openConflictIfNeeded]);
 
   const registerReplay = useCallback((fn: ReplayFn | null) => {
     replayRef.current = fn;
@@ -284,14 +415,23 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     drainCompleteRef.current = fn;
   }, []);
 
-  // Auto-drain when back online, scope ready, or retry requested.
+  const registerConflictHandlers = useCallback(
+    (handlers: ConflictHandlers | null) => {
+      conflictHandlersRef.current = handlers;
+    },
+    []
+  );
+
+  // Auto-drain when back online — unless pending ops need a conflict decision.
   useEffect(() => {
-    if (roleLoading || !scope || !isOnline) {
+    if (roleLoading || !scope || !writeReady || !isOnline || !outboxReady) {
       wasOnlineRef.current = isOnline;
-      clearRetryTimer();
-      autoRetryAttemptRef.current = 0;
-      drainingRef.current = false;
-      setIsSyncing(false);
+      if (!isOnline) {
+        clearRetryTimer();
+        autoRetryAttemptRef.current = 0;
+        drainingRef.current = false;
+        setIsSyncing(false);
+      }
       return;
     }
 
@@ -299,12 +439,28 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     wasOnlineRef.current = true;
     const delay = comingOnline ? RECONNECT_DRAIN_DELAY_MS : 0;
     const t = setTimeout(() => {
-      void drain();
+      void (async () => {
+        if (awaitingConflictRef.current) return;
+        if (conflictResolvedScopeRef.current !== scope.rosterId) {
+          const opened = await openConflictIfNeeded();
+          if (opened) return;
+        }
+        await drain();
+      })();
     }, delay);
     return () => clearTimeout(t);
-  }, [roleLoading, scope, isOnline, drainNonce, drain, clearRetryTimer]);
+  }, [
+    roleLoading,
+    scope,
+    writeReady,
+    isOnline,
+    outboxReady,
+    drainNonce,
+    drain,
+    clearRetryTimer,
+    openConflictIfNeeded,
+  ]);
 
-  // App resume: re-check network and kick drain (iPad Settings → back).
   useEffect(() => {
     const onAppState = (next: AppStateStatus) => {
       if (next !== 'active') return;
@@ -318,21 +474,26 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     return () => sub.remove();
   }, []);
 
-  // Pending ops online but idle (and not mid-retry wait) → nudge drain.
   useEffect(() => {
     if (!isOnline || roleLoading || pendingCount === 0 || isSyncing) return;
     if (syncError) return;
     if (retryTimerRef.current) return;
+    if (awaitingConflictRef.current) return;
+    if (conflictResolvedScopeRef.current !== scope?.rosterId) return;
     const t = setTimeout(() => {
       setDrainNonce((n) => n + 1);
     }, 2000);
     return () => clearTimeout(t);
-  }, [isOnline, roleLoading, pendingCount, isSyncing, syncError]);
+  }, [isOnline, roleLoading, pendingCount, isSyncing, syncError, scope]);
 
   useEffect(() => () => clearRetryTimer(), [clearRetryTimer]);
 
   const shouldQueueWrites =
-    !isOnline || isSyncing || pendingCount > 0 || Boolean(syncError);
+    !isOnline ||
+    isSyncing ||
+    pendingCount > 0 ||
+    Boolean(syncError) ||
+    conflictVisible;
 
   const value = useMemo<OfflineValue>(
     () => ({
@@ -349,8 +510,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       enqueue,
       registerReplay,
       registerDrainComplete,
+      registerConflictHandlers,
       retrySync,
       refreshPendingCount,
+      conflictVisible,
+      conflictRosterName,
+      conflictBusy,
+      conflictError,
+      resolveConflict,
     }),
     [
       isOnline,
@@ -364,8 +531,14 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       enqueue,
       registerReplay,
       registerDrainComplete,
+      registerConflictHandlers,
       retrySync,
       refreshPendingCount,
+      conflictVisible,
+      conflictRosterName,
+      conflictBusy,
+      conflictError,
+      resolveConflict,
     ]
   );
 
@@ -382,7 +555,6 @@ export function useOffline(): OfflineValue {
   return ctx;
 }
 
-/** Optional: null when outside provider (e.g. dashboard). */
 export function useOfflineOptional(): OfflineValue | null {
   return useContext(OfflineContext);
 }

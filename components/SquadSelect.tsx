@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -6,10 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useActiveRole } from '@/lib/ActiveRoleContext';
-import { isMasterKind } from '@/lib/masterConflicts';
-import { ownSquadForWorkspace } from '@/lib/masterWorkspace';
-import type { PlayerAssignment, SquadTeam } from '@/lib/types';
+import type { PlayerAssignment } from '@/lib/types';
 import { SQUAD_TEAMS, UNAVAILABLE_POOL } from '@/lib/types';
 import { colors } from '@/constants/theme';
 
@@ -18,39 +15,50 @@ type Props = {
   onChange: (value: PlayerAssignment | null) => void;
   style?: object;
   disabled?: boolean;
+  /** Shorter closed-button labels (e.g. Varsity → Var). */
+  compact?: boolean;
 };
 
-function labelFor(value: PlayerAssignment | null) {
-  if (!value) return 'Available';
-  if (value === UNAVAILABLE_POOL) return 'Unavailable';
-  return SQUAD_TEAMS.find((t) => t.id === value)?.label ?? value;
+function labelFor(value: PlayerAssignment | null, compact?: boolean) {
+  if (!value) return compact ? 'Avail' : 'Available';
+  if (value === UNAVAILABLE_POOL) return compact ? 'Unavail' : 'Unavailable';
+  const team = SQUAD_TEAMS.find((t) => t.id === value);
+  if (!team) return value;
+  return compact ? team.shortLabel : team.label;
 }
 
-export function SquadSelect({ value, onChange, style, disabled }: Props) {
+export function SquadSelect({
+  value,
+  onChange,
+  style,
+  disabled,
+  compact,
+}: Props) {
   const [open, setOpen] = useState(false);
-  const { workspaceKind } = useActiveRole();
-  const ownSquad = ownSquadForWorkspace(workspaceKind);
-  const squadOptions = useMemo((): SquadTeam[] => {
-    if (workspaceKind && isMasterKind(workspaceKind) && ownSquad) {
-      return [ownSquad];
-    }
-    return SQUAD_TEAMS.map((t) => t.id);
-  }, [workspaceKind, ownSquad]);
 
   return (
     <>
       <Pressable
-        style={[styles.btn, disabled && styles.disabled, style]}
+        style={[
+          styles.btn,
+          compact && styles.btnCompact,
+          disabled && styles.disabled,
+          style,
+        ]}
         onPress={() => {
           if (!disabled) setOpen(true);
         }}
         disabled={disabled}
       >
         <Text
-          style={[styles.btnText, !value && styles.placeholder]}
+          style={[
+            styles.btnText,
+            compact && styles.btnTextCompact,
+            !value && styles.placeholder,
+          ]}
           numberOfLines={1}
         >
-          {labelFor(value)}
+          {labelFor(value, compact)}
         </Text>
       </Pressable>
       <Modal
@@ -91,28 +99,25 @@ export function SquadSelect({ value, onChange, style, disabled }: Props) {
                 Unavailable
               </Text>
             </Pressable>
-            {squadOptions.map((teamId) => {
-              const team = SQUAD_TEAMS.find((t) => t.id === teamId);
-              return (
-                <Pressable
-                  key={teamId}
-                  style={styles.option}
-                  onPress={() => {
-                    onChange(teamId);
-                    setOpen(false);
-                  }}
+            {SQUAD_TEAMS.map((team) => (
+              <Pressable
+                key={team.id}
+                style={styles.option}
+                onPress={() => {
+                  onChange(team.id);
+                  setOpen(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.optionText,
+                    value === team.id && styles.optionSelected,
+                  ]}
                 >
-                  <Text
-                    style={[
-                      styles.optionText,
-                      value === teamId && styles.optionSelected,
-                    ]}
-                  >
-                    {team?.label ?? teamId}
-                  </Text>
-                </Pressable>
-              );
-            })}
+                  {team.label}
+                </Text>
+              </Pressable>
+            ))}
           </View>
         </Pressable>
       </Modal>
@@ -132,10 +137,18 @@ const styles = StyleSheet.create({
     minHeight: 36,
     minWidth: 0,
   },
+  btnCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    minHeight: 32,
+  },
   btnText: {
     fontSize: 14,
     color: colors.text,
     fontWeight: '600',
+  },
+  btnTextCompact: {
+    fontSize: 13,
   },
   placeholder: {
     color: colors.muted,

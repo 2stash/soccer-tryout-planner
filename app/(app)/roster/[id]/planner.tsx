@@ -7,18 +7,9 @@ import {
   View,
 } from 'react-native';
 import { Redirect } from 'expo-router';
-import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
-import { useMasterConflicts } from '@/lib/MasterConflictContext';
 import { useRosterData } from '@/lib/RosterDataContext';
 import { useLayout } from '@/lib/layout';
-import { mergeLiveSquadPlayers } from '@/lib/adminLiveRoster';
-import {
-  isMasterKind,
-  masterKindForSquad,
-  type MasterKind,
-} from '@/lib/masterConflicts';
-import { ownSquadForWorkspace } from '@/lib/masterWorkspace';
 import type { Player, SquadTeam } from '@/lib/types';
 import { SQUAD_TEAMS } from '@/lib/types';
 import {
@@ -33,23 +24,9 @@ import { FORMATION_433, slotTitle } from '@/lib/formation';
 import { PitchBoard } from '@/components/PitchBoard';
 import { colors, layout } from '@/constants/theme';
 
-type PlannerTab = SquadTeam | `master:${MasterKind}`;
-
-function isMasterPlannerTab(
-  key: PlannerTab
-): key is `master:${MasterKind}` {
-  return typeof key === 'string' && key.startsWith('master:');
-}
-
 export default function SquadPlannerPitchScreen() {
   const { session, loading: authLoading, configured } = useAuth();
   const { isPhone, isCompact, isDesktop } = useLayout();
-  const { workspaceKind, isAdminLiveMode } = useActiveRole();
-  const {
-    officialPlayers,
-    otherMasterKinds,
-    masterLabel,
-  } = useMasterConflicts();
   const {
     roster,
     players,
@@ -61,60 +38,28 @@ export default function SquadPlannerPitchScreen() {
     clearError,
   } = useRosterData();
 
-  const isMasterView =
-    workspaceKind != null && isMasterKind(workspaceKind);
-  const ownSquad = ownSquadForWorkspace(workspaceKind);
+  const plannerTabs = useMemo(
+    () => SQUAD_TEAMS.map((t) => ({ key: t.id as SquadTeam, label: t.label })),
+    []
+  );
 
-  const plannerTabs = useMemo((): { key: PlannerTab; label: string }[] => {
-    if (isMasterView && ownSquad) {
-      const ownLabel =
-        SQUAD_TEAMS.find((t) => t.id === ownSquad)?.label ?? ownSquad;
-      return [
-        { key: ownSquad, label: ownLabel },
-        ...otherMasterKinds.map((kind) => ({
-          key: `master:${kind}` as PlannerTab,
-          label: `${masterLabel(kind)} (RO)`,
-        })),
-      ];
-    }
-    return SQUAD_TEAMS.map((t) => ({ key: t.id as PlannerTab, label: t.label }));
-  }, [isMasterView, ownSquad, otherMasterKinds, masterLabel]);
-
-  const [tab, setTab] = useState<PlannerTab>(ownSquad ?? 'varsity');
+  const [tab, setTab] = useState<SquadTeam>('varsity');
   useEffect(() => {
     if (!plannerTabs.some((t) => t.key === tab)) {
       setTab(plannerTabs[0]?.key ?? 'varsity');
     }
   }, [plannerTabs, tab]);
 
-  const showingOtherMaster = isMasterPlannerTab(tab);
-  const squadTeam: SquadTeam | null = showingOtherMaster
-    ? null
-    : (tab as SquadTeam);
+  const squadTeam = tab;
   const [busyId, setBusyId] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  const readonlyPlayers = useMemo(() => {
-    if (!showingOtherMaster) return [];
-    const kind = tab.slice('master:'.length) as MasterKind;
-    return officialPlayers(kind, players);
-  }, [showingOtherMaster, tab, officialPlayers, players]);
 
-  const squadPlayers = useMemo(() => {
-    if (!squadTeam) return [] as Player[];
-    if (isAdminLiveMode) {
-      const kind = masterKindForSquad(squadTeam);
-      return mergeLiveSquadPlayers({
-        squad: squadTeam,
-        claimedPlayers: officialPlayers(kind, players),
-        rosterPlayers: players,
-      });
-    }
-    return players.filter((p) => p.squad_team === squadTeam);
-  }, [players, squadTeam, isAdminLiveMode, officialPlayers]);
+  const squadPlayers = useMemo(
+    () => players.filter((p) => p.squad_team === squadTeam),
+    [players, squadTeam]
+  );
 
-  const depthEntries = squadTeam
-    ? depthCache[squadTeam]?.depthEntries ?? []
-    : [];
+  const depthEntries = depthCache[squadTeam]?.depthEntries ?? [];
 
   const noPosition = useMemo(
     () =>
@@ -155,9 +100,8 @@ export default function SquadPlannerPitchScreen() {
     }
   }
 
-  const teamLabel = showingOtherMaster
-    ? masterLabel(tab.slice('master:'.length) as MasterKind)
-    : SQUAD_TEAMS.find((t) => t.id === squadTeam)?.label ?? squadTeam;
+  const teamLabel =
+    SQUAD_TEAMS.find((t) => t.id === squadTeam)?.label ?? squadTeam;
   const displayError = localError ?? error;
 
   function renderPhoneLists() {
@@ -266,12 +210,8 @@ export default function SquadPlannerPitchScreen() {
         <View style={styles.teamTabs}>
           {plannerTabs.map((item) => {
             const active = tab === item.key;
-            const count = isMasterPlannerTab(item.key)
-              ? officialPlayers(
-                  item.key.slice('master:'.length) as MasterKind,
-                  players
-                ).length
-              : players.filter((p) => p.squad_team === item.key).length;
+            const count = players.filter((p) => p.squad_team === item.key)
+              .length;
             return (
               <Pressable
                 key={item.key}
@@ -304,27 +244,7 @@ export default function SquadPlannerPitchScreen() {
           <Text style={styles.busy}>Updating…</Text>
         ) : null}
 
-        {showingOtherMaster ? (
-          <View style={styles.emptyBox}>
-            <Text style={styles.emptyTitle}>{teamLabel} (read-only)</Text>
-            <Text style={styles.emptyText}>
-              Official claims from this master. Switch to your team tab to edit.
-            </Text>
-            {readonlyPlayers.length === 0 ? (
-              <Text style={styles.emptyText}>No players claimed yet.</Text>
-            ) : (
-              readonlyPlayers.map((player) => (
-                <Text key={player.id} style={styles.benchPlayer}>
-                  {player.last_name}, {player.first_name}
-                  {player.school_year ? ` · ${player.school_year}` : ''}
-                  {formatPositionsShort(player.positions)
-                    ? ` · ${formatPositionsShort(player.positions)}`
-                    : ''}
-                </Text>
-              ))
-            )}
-          </View>
-        ) : !loading && depthReady && squadPlayers.length === 0 ? (
+        {!loading && depthReady && squadPlayers.length === 0 ? (
           <View style={styles.emptyBox}>
             <Text style={styles.emptyTitle}>No players on {teamLabel}</Text>
             <Text style={styles.emptyText}>
@@ -487,11 +407,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
     color: colors.muted,
-  },
-  slotSub: {
-    fontSize: 12,
-    color: colors.muted,
-    marginBottom: 4,
   },
   emptySlot: {
     color: colors.muted,

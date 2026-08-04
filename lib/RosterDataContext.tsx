@@ -25,7 +25,6 @@ import {
   setPlayerPositions,
   setPlayerSquadTeam,
   setPlayerTeamRanks,
-  subscribeToLiveMasterRoster,
   subscribeToPlayers,
   unsubscribePlayers,
   updatePlayer,
@@ -69,37 +68,26 @@ import {
   playersInRankPool,
   type RankPool,
 } from '@/lib/assignPools';
-import {
-  adminLiveAssign,
-  adminLiveRemoveFromTeam,
-  adminLiveSetPoolRanks,
-  fetchLiveMasterState,
-  flattenLivePlayers,
-  liveSquadPlayersForTeam,
-  masterWorkspaceForSquad,
-  type LiveMasterState,
-} from '@/lib/adminLiveRoster';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useMasterConflicts } from '@/lib/MasterConflictContext';
-import {
-  masterKindForSquad,
-  masterWorkspaces,
-} from '@/lib/masterConflicts';
-import {
-  isAllowedMasterAssignment,
-  ownSquadForWorkspace,
-} from '@/lib/masterWorkspace';
 import { useOffline } from '@/lib/offline/OfflineContext';
 import { loadOutbox } from '@/lib/offline/outbox';
-import { loadRosterSnapshot, saveRosterSnapshot } from '@/lib/offline/snapshot';
-import type { OfflineOp, OfflineOpInput } from '@/lib/offline/types';
+import {
+  loadRosterSnapshot,
+  peekRosterSnapshot,
+  saveRosterSnapshot,
+} from '@/lib/offline/snapshot';
+import type {
+  OfflineOp,
+  OfflineOpInput,
+  OfflineScope,
+} from '@/lib/offline/types';
 import type {
   Player,
   PlayerAssignment,
   PlayerInput,
   Roster,
   SquadTeam,
-  Workspace,
 } from '@/lib/types';
 import { isSquadTeam, SQUAD_TEAMS } from '@/lib/types';
 
@@ -170,8 +158,6 @@ type RosterDataValue = {
   }) => Promise<void>;
   /** Reset unpinned players in a ranked pool to class then name. */
   resetAvailableOrder: (pool?: RankPool) => Promise<void>;
-  /** Admin Live: remove from one master team (conflicts may remain). */
-  removeFromLiveTeam: (playerId: string, squadTeam: SquadTeam) => Promise<void>;
 };
 
 const RosterDataContext = createContext<RosterDataValue | null>(null);
@@ -268,22 +254,13 @@ export function RosterDataProvider({
 }) {
   const {
     activeWorkspaceId,
-    workspaceKind,
     loading: roleLoading,
-    isAdminLiveMode,
-    workspaces,
-    adminEditMode,
   } = useActiveRole();
   const {
     refresh: refreshMasterClaims,
     exportSnapshotSlice,
     hydrateFromSnapshot,
-    applyOfflineAssign,
-    applyOfflineRemoveFromTeam,
-    claimsByPlayer,
   } = useMasterConflicts();
-  const claimsByPlayerRef = useRef(claimsByPlayer);
-  claimsByPlayerRef.current = claimsByPlayer;
   const {
     isOnline,
     shouldQueueWrites,
@@ -294,17 +271,27 @@ export function RosterDataProvider({
     enqueue,
     registerReplay,
     registerDrainComplete,
+    registerConflictHandlers,
     setOfflineReady,
     retrySync,
   } = useOffline();
-  const [roster, setRoster] = useState<Roster | null>(null);
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [depthCache, setDepthCache] = useState<DepthCacheMap>({});
-  const [loading, setLoading] = useState(true);
-  const [depthReady, setDepthReady] = useState(false);
+  const bootSnap = peekRosterSnapshot({ rosterId, workspaceId: '' });
+  const [roster, setRoster] = useState<Roster | null>(
+    () => bootSnap?.roster ?? null
+  );
+  const [players, setPlayers] = useState<Player[]>(
+    () => bootSnap?.players ?? []
+  );
+  const [depthCache, setDepthCache] = useState<DepthCacheMap>(
+    () => bootSnap?.depthCache ?? {}
+  );
+  const [loading, setLoading] = useState(() => !bootSnap);
+  const [depthReady, setDepthReady] = useState(() => Boolean(bootSnap));
   const [error, setError] = useState<string | null>(null);
 
-  const membershipRef = useRef('');
+  const membershipRef = useRef(
+    bootSnap ? membershipKey(bootSnap.players) : ''
+  );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncingRef = useRef(false);
   const muteRealtimeUntilRef = useRef(0);
@@ -314,12 +301,6 @@ export function RosterDataProvider({
   rosterIdRef.current = rosterId;
   const workspaceIdRef = useRef(activeWorkspaceId);
   workspaceIdRef.current = activeWorkspaceId;
-  const workspaceKindRef = useRef(workspaceKind);
-  workspaceKindRef.current = workspaceKind;
-  const liveModeRef = useRef(isAdminLiveMode);
-  liveModeRef.current = isAdminLiveMode;
-  const mastersRef = useRef<Workspace[]>([]);
-  mastersRef.current = masterWorkspaces(workspaces);
   const depthCacheRef = useRef(depthCache);
   depthCacheRef.current = depthCache;
   const playersRef = useRef(players);
@@ -349,7 +330,24 @@ export function RosterDataProvider({
   const hydrateFromSnapshotRef = useRef(hydrateFromSnapshot);
   hydrateFromSnapshotRef.current = hydrateFromSnapshot;
   /** Scope key currently painted in memory — used to drop stale workspace UI. */
-  const paintedScopeKeyRef = useRef('');
+  const paintedScopeKeyRef = useRef(bootSnap ? rosterId : '');
+
+  // Apply master-conflict slice from the sync boot snapshot once.
+  useEffect(() => {
+    if (!bootSnap) return;
+    try {
+      hydrateFromSnapshotRef.current?.({
+        claimsEntries: bootSnap.claimsEntries,
+        claimedPlayers: bootSnap.claimedPlayers,
+        depthByKind: bootSnap.depthByKind,
+      });
+    } catch {
+      // Conflict provider may be a stub.
+    }
+    setOfflineReadyRef.current(true);
+    // Intentionally once per mount / bootSnap identity for this rosterId.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rosterId]);
 
   const persistSnapshot = useCallback(async () => {
     const s = scopeRef.current;
@@ -357,7 +355,7 @@ export function RosterDataProvider({
     if (playersRef.current.length === 0 && !rosterRef.current) return;
     const slice = exportSnapshotSliceRef.current();
     await saveRosterSnapshot({
-      version: 1,
+      version: 2,
       scope: s,
       savedAt: Date.now(),
       roster: rosterRef.current,
@@ -384,10 +382,7 @@ export function RosterDataProvider({
     [enqueue, persistSnapshot]
   );
 
-  function workspaceIdForSquad(squad: SquadTeam): string | null {
-    if (liveModeRef.current) {
-      return masterWorkspaceForSquad(mastersRef.current, squad)?.id ?? null;
-    }
+  function workspaceIdForSquad(_squad: SquadTeam): string | null {
     return workspaceIdRef.current;
   }
 
@@ -403,59 +398,12 @@ export function RosterDataProvider({
     syncingRef.current = true;
     const id = rosterIdRef.current;
     try {
-      // Live mode: same depth/sub sync as head coaches, for all three masters.
-      // Read-only load left sub_order empty → ↑↓ bench ranking was a no-op.
-      if (liveModeRef.current) {
-        const masters = mastersRef.current;
-        const live = await fetchLiveMasterState(masters);
-        const liveState: LiveMasterState = { ...live, masters };
-        const nextCache: DepthCacheMap = {};
-        await Promise.all(
-          SQUAD_TEAMS.map(async (team) => {
-            const master = masterWorkspaceForSquad(masters, team.id);
-            const squadPlayers = liveSquadPlayersForTeam(
-              nextPlayers,
-              team.id,
-              liveState
-            );
-            if (!master || squadPlayers.length === 0) {
-              nextCache[team.id] = { depthEntries: [], subEntries: [] };
-              return;
-            }
-            nextCache[team.id] = await syncAndLoadSquad(
-              id,
-              team.id,
-              master.id,
-              squadPlayers
-            );
-          })
-        );
-        setDepthCache(nextCache);
-        membershipRef.current = membershipKey(nextPlayers);
-        setDepthReady(true);
-        return;
-      }
-
       const nextCache: DepthCacheMap = {};
-      const kind = workspaceKindRef.current;
-      const ownSquad = ownSquadForWorkspace(kind);
-      const teamsToSync =
-        ownSquad != null
-          ? SQUAD_TEAMS.filter((t) => t.id === ownSquad)
-          : SQUAD_TEAMS;
+      const workspaceId = workspaceIdRef.current;
 
       for (const team of SQUAD_TEAMS) {
-        if (!teamsToSync.some((t) => t.id === team.id)) {
-          nextCache[team.id] = { depthEntries: [], subEntries: [] };
-          continue;
-        }
         const squadPlayers = nextPlayers.filter((p) => p.squad_team === team.id);
-        if (squadPlayers.length === 0) {
-          nextCache[team.id] = { depthEntries: [], subEntries: [] };
-          continue;
-        }
-        const workspaceId = workspaceIdRef.current;
-        if (!workspaceId) {
+        if (squadPlayers.length === 0 || !workspaceId) {
           nextCache[team.id] = { depthEntries: [], subEntries: [] };
           continue;
         }
@@ -524,89 +472,38 @@ export function RosterDataProvider({
     [syncDepthForPlayers]
   );
 
-  const refreshLivePlayers = useCallback(
-    async (opts?: { forceSync?: boolean; skipDepthSync?: boolean }) => {
-      const workspaceId = workspaceIdRef.current;
-      if (!workspaceId) return;
-      const id = rosterIdRef.current;
-      const [base, live] = await Promise.all([
-        listPlayers(id, workspaceId),
-        fetchLiveMasterState(mastersRef.current),
-      ]);
-      const data = flattenLivePlayers(base, {
-        ...live,
-        masters: mastersRef.current,
-      });
-      await applyPlayers(data, opts);
-    },
-    [applyPlayers]
-  );
-
   const refreshPlayers = useCallback(
     async (opts?: { forceSync?: boolean; skipDepthSync?: boolean }) => {
-      if (liveModeRef.current) {
-        await refreshLivePlayers(opts);
-        return;
-      }
       const workspaceId = workspaceIdRef.current;
       if (!workspaceId) return;
       const data = await listPlayers(rosterIdRef.current, workspaceId);
       await applyPlayers(data, opts);
     },
-    [applyPlayers, refreshLivePlayers]
+    [applyPlayers]
   );
 
   const refreshPlayersRef = useRef(refreshPlayers);
   refreshPlayersRef.current = refreshPlayers;
 
   const loadDepthListsForPlayers = useCallback(
-    async (nextPlayers: Player[]): Promise<DepthCacheMap> => {
+    async (_nextPlayers: Player[]): Promise<DepthCacheMap> => {
       const id = rosterIdRef.current;
       const nextCache: DepthCacheMap = {};
-
-      if (liveModeRef.current) {
-        const masters = mastersRef.current;
-        await Promise.all(
-          SQUAD_TEAMS.map(async (team) => {
-            const master = masterWorkspaceForSquad(masters, team.id);
-            if (!master) {
-              nextCache[team.id] = { depthEntries: [], subEntries: [] };
-              return;
-            }
-            nextCache[team.id] = await loadSquadDepthOnly(
-              id,
-              team.id,
-              master.id
-            );
-          })
-        );
-        return nextCache;
-      }
-
-      const kind = workspaceKindRef.current;
-      const ownSquad = ownSquadForWorkspace(kind);
-      const teamsToLoad =
-        ownSquad != null
-          ? SQUAD_TEAMS.filter((t) => t.id === ownSquad)
-          : SQUAD_TEAMS;
       const workspaceId = workspaceIdRef.current;
 
-      for (const team of SQUAD_TEAMS) {
-        if (!teamsToLoad.some((t) => t.id === team.id) || !workspaceId) {
-          nextCache[team.id] = { depthEntries: [], subEntries: [] };
-          continue;
-        }
-        const squadPlayers = nextPlayers.filter((p) => p.squad_team === team.id);
-        if (squadPlayers.length === 0) {
-          nextCache[team.id] = { depthEntries: [], subEntries: [] };
-          continue;
-        }
-        nextCache[team.id] = await loadSquadDepthOnly(
-          id,
-          team.id,
-          workspaceId
-        );
-      }
+      await Promise.all(
+        SQUAD_TEAMS.map(async (team) => {
+          if (!workspaceId) {
+            nextCache[team.id] = { depthEntries: [], subEntries: [] };
+            return;
+          }
+          nextCache[team.id] = await loadSquadDepthOnly(
+            id,
+            team.id,
+            workspaceId
+          );
+        })
+      );
       return nextCache;
     },
     []
@@ -623,54 +520,39 @@ export function RosterDataProvider({
     depthCacheRef.current = snap.depthCache;
     membershipRef.current = membershipKey(snap.players);
     setDepthReady(true);
-    hydrateFromSnapshotRef.current({
-      claimsEntries: snap.claimsEntries,
-      claimedPlayers: snap.claimedPlayers,
-      depthByKind: snap.depthByKind,
-    });
+    try {
+      hydrateFromSnapshotRef.current?.({
+        claimsEntries: snap.claimsEntries,
+        claimedPlayers: snap.claimedPlayers,
+        depthByKind: snap.depthByKind,
+      });
+    } catch {
+      // Conflict provider may be a stub — snapshot players/depth still apply.
+    }
     setOfflineReadyRef.current(true);
     setError(null);
     return true;
   }
 
-  // Cache-first load: paint snapshot immediately, then soft-refresh from server
-  // without wiping the tab shell (loading stays false once we have anything to show).
+  // Cache-first load: paint AsyncStorage snapshot by rosterId immediately
+  // (do not wait for roles/workspace). Soft-refresh from server once workspace
+  // is known — without wiping the tab shell.
   useEffect(() => {
     let active = true;
-    const nextScopeKey = scope
-      ? `${scope.rosterId}:${scope.workspaceId}:${scope.adminEditMode ? 1 : 0}`
-      : '';
+    const nextScopeKey = rosterId;
+    const loadScope: OfflineScope = scope ?? {
+      rosterId,
+      workspaceId: activeWorkspaceId ?? '',
+    };
 
-    if (roleLoading || !outboxReady) {
-      // Scope changed while outbox reloads — do not keep the previous workspace painted.
-      if (
-        nextScopeKey &&
-        paintedScopeKeyRef.current &&
-        nextScopeKey !== paintedScopeKeyRef.current
-      ) {
-        paintedScopeKeyRef.current = '';
-        membershipRef.current = '';
-        lastPulledAtRef.current = null;
-        setRoster(null);
-        rosterRef.current = null;
-        setPlayers([]);
-        playersRef.current = [];
-        setDepthCache({});
-        depthCacheRef.current = {};
-        setDepthReady(false);
-        setLoading(true);
-      } else if (playersRef.current.length === 0 && !rosterRef.current) {
-        setLoading(true);
-      }
-      return () => {
-        active = false;
-      };
-    }
-
-    if (!activeWorkspaceId || !scope) {
+    // Switching teams: drop previous paint only when roster id actually changes.
+    if (
+      paintedScopeKeyRef.current &&
+      paintedScopeKeyRef.current !== nextScopeKey
+    ) {
       paintedScopeKeyRef.current = '';
+      membershipRef.current = '';
       lastPulledAtRef.current = null;
-      setLoading(false);
       setRoster(null);
       rosterRef.current = null;
       setPlayers([]);
@@ -678,38 +560,34 @@ export function RosterDataProvider({
       setDepthCache({});
       depthCacheRef.current = {};
       setDepthReady(false);
-      setError(
-        activeWorkspaceId ? null : 'No active workspace for this role.'
-      );
-      return () => {
-        active = false;
-      };
+      setLoading(true);
     }
-
-    const workspaceId = activeWorkspaceId;
-    const live = isAdminLiveMode;
-    const loadScope = scope;
 
     (async () => {
       setError(null);
 
-      // 1) Instant local paint from snapshot (online or offline).
-      const snapOk = await hydrateFromSnap(loadScope);
-      if (!active) return;
-      if (snapOk) {
-        paintedScopeKeyRef.current = nextScopeKey;
-        setLoading(false);
-      } else {
-        // No cache for this scope — clear stale paint from a previous workspace.
-        paintedScopeKeyRef.current = '';
-        membershipRef.current = '';
-        lastPulledAtRef.current = null;
-        setPlayers([]);
-        playersRef.current = [];
-        setDepthCache({});
-        depthCacheRef.current = {};
-        setDepthReady(false);
-        setLoading(true);
+      // 1) Instant local paint — runs even while roles/outbox are still loading.
+      const alreadyPainted =
+        paintedScopeKeyRef.current === nextScopeKey &&
+        (playersRef.current.length > 0 || Boolean(rosterRef.current));
+      let snapOk = alreadyPainted;
+      if (!alreadyPainted) {
+        snapOk = await hydrateFromSnap(loadScope);
+        if (!active) return;
+        if (snapOk) {
+          paintedScopeKeyRef.current = nextScopeKey;
+          setLoading(false);
+        } else {
+          paintedScopeKeyRef.current = '';
+          membershipRef.current = '';
+          lastPulledAtRef.current = null;
+          setPlayers([]);
+          playersRef.current = [];
+          setDepthCache({});
+          depthCacheRef.current = {};
+          setDepthReady(false);
+          setLoading(true);
+        }
       }
 
       if (!isOnlineRef.current) {
@@ -721,7 +599,14 @@ export function RosterDataProvider({
         return;
       }
 
+      // Network refresh needs workspace + roles; snapshot paint already done.
+      if (roleLoading || !activeWorkspaceId || !outboxReady) {
+        return;
+      }
+
+      const workspaceId = activeWorkspaceId;
       const pending = await loadOutbox(loadScope);
+      if (!active) return;
       if (pending.length > 0) {
         // Keep optimistic snapshot; drain-complete force-reconciles from server.
         if (!snapOk) {
@@ -752,49 +637,22 @@ export function RosterDataProvider({
         }
         setRoster(r);
         rosterRef.current = r;
-        if (live) {
-          const [base, liveState] = await Promise.all([
-            listPlayers(rosterId, workspaceId),
-            fetchLiveMasterState(masterWorkspaces(workspaces)),
-          ]);
-          if (!active) return;
-          const data = flattenLivePlayers(base, {
-            ...liveState,
-            masters: masterWorkspaces(workspaces),
-          });
-          setPlayers(data);
-          playersRef.current = data;
-          const nextKey = membershipKey(data);
-          // Snapshot already had depth: read-only list reload (fast). Else sync/repair.
-          if (snapOk && nextKey === membershipRef.current) {
-            const lists = await loadDepthListsForPlayers(data);
-            setDepthCache(lists);
-            depthCacheRef.current = lists;
-            setDepthReady(true);
-          } else {
-            await syncDepthForPlayers(data);
-          }
-          lastPulledAtRef.current =
-            watermarkFromPlayersAndDepth(data, depthCacheRef.current) ??
-            new Date().toISOString();
+        const data = await listPlayers(rosterId, workspaceId);
+        if (!active) return;
+        setPlayers(data);
+        playersRef.current = data;
+        const nextKey = membershipKey(data);
+        if (snapOk && nextKey === membershipRef.current) {
+          const lists = await loadDepthListsForPlayers(data);
+          setDepthCache(lists);
+          depthCacheRef.current = lists;
+          setDepthReady(true);
         } else {
-          const data = await listPlayers(rosterId, workspaceId);
-          if (!active) return;
-          setPlayers(data);
-          playersRef.current = data;
-          const nextKey = membershipKey(data);
-          if (snapOk && nextKey === membershipRef.current) {
-            const lists = await loadDepthListsForPlayers(data);
-            setDepthCache(lists);
-            depthCacheRef.current = lists;
-            setDepthReady(true);
-          } else {
-            await syncDepthForPlayers(data);
-          }
-          lastPulledAtRef.current =
-            watermarkFromPlayersAndDepth(data, depthCacheRef.current) ??
-            new Date().toISOString();
+          await syncDepthForPlayers(data);
         }
+        lastPulledAtRef.current =
+          watermarkFromPlayersAndDepth(data, depthCacheRef.current) ??
+          new Date().toISOString();
         if (active) {
           paintedScopeKeyRef.current = nextScopeKey;
           const stillPending = await loadOutbox(loadScope);
@@ -827,11 +685,9 @@ export function RosterDataProvider({
     activeWorkspaceId,
     roleLoading,
     outboxReady,
-    isAdminLiveMode,
-    workspaces,
+    scope,
     syncDepthForPlayers,
     loadDepthListsForPlayers,
-    adminEditMode,
     persistSnapshot,
     retrySync,
   ]);
@@ -889,19 +745,7 @@ export function RosterDataProvider({
           .current(opts?.force ? { force: true } : undefined)
           .catch(() => {});
 
-        let nextPlayers: Player[];
-        if (liveModeRef.current) {
-          const [base, live] = await Promise.all([
-            listPlayers(id, workspaceId),
-            fetchLiveMasterState(mastersRef.current),
-          ]);
-          nextPlayers = flattenLivePlayers(base, {
-            ...live,
-            masters: mastersRef.current,
-          });
-        } else {
-          nextPlayers = await listPlayers(id, workspaceId);
-        }
+        const nextPlayers = await listPlayers(id, workspaceId);
 
         const nextKey = membershipKey(nextPlayers);
         const membershipChanged = nextKey !== membershipRef.current;
@@ -982,22 +826,12 @@ export function RosterDataProvider({
       }
     };
 
-    const live = isAdminLiveMode;
-    const masterIds = masterWorkspaces(workspaces).map((w) => w.id);
-    const channel =
-      live && masterIds.length > 0
-        ? subscribeToLiveMasterRoster(
-            rosterId,
-            masterIds,
-            onRealtime,
-            onStatus
-          )
-        : subscribeToPlayers(
-            rosterId,
-            activeWorkspaceId,
-            onRealtime,
-            onStatus
-          );
+    const channel = subscribeToPlayers(
+      rosterId,
+      activeWorkspaceId,
+      onRealtime,
+      onStatus
+    );
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -1007,9 +841,7 @@ export function RosterDataProvider({
     rosterId,
     activeWorkspaceId,
     roleLoading,
-    isAdminLiveMode,
     isOnline,
-    workspaces,
     realtimeEpoch,
     reconcileFromServer,
   ]);
@@ -1152,9 +984,6 @@ export function RosterDataProvider({
         setPlayers(next);
         playersRef.current = next;
         membershipRef.current = membershipKey(next);
-        if (liveModeRef.current) {
-          applyOfflineAssign(playerId, team, prev ?? null);
-        }
         // Capture absolute pool ranks so replay doesn't recompute a different order.
         const pools: RankPool[] = ['available', 'unavailable'];
         for (const pool of pools) {
@@ -1184,33 +1013,6 @@ export function RosterDataProvider({
         return;
       }
 
-      if (liveModeRef.current) {
-        const live = await fetchLiveMasterState(mastersRef.current);
-        await adminLiveAssign({
-          rosterId,
-          masters: mastersRef.current,
-          playerId,
-          target: team,
-          players: playersRef.current,
-          claimsByPlayer: live.claimsByPlayer,
-        });
-        if (!replayingRef.current) {
-          muteRealtimeBriefly(1500);
-        }
-        // Claims drive Assign / All Players team columns — refresh before UI reads.
-        await refreshMasterClaims(
-          replayingRef.current ? { force: true } : undefined
-        );
-        await refreshLivePlayers({ forceSync: true });
-        void persistSnapshot();
-        return;
-      }
-
-      if (!isAllowedMasterAssignment(workspaceKindRef.current, team)) {
-        throw new Error(
-          'This master can only assign to its own team, Available, or Unavailable.'
-        );
-      }
       // Changing pools/teams clears the star pin.
       const updated =
         prev?.available_pinned && prev.squad_team !== team
@@ -1279,15 +1081,7 @@ export function RosterDataProvider({
       }
       void persistSnapshot();
     },
-    [
-      rosterId,
-      refreshLivePlayers,
-      refreshMasterClaims,
-      queueIfNeeded,
-      persistSnapshot,
-      applyOfflineAssign,
-      enqueue,
-    ]
+    [rosterId, queueIfNeeded, persistSnapshot, enqueue]
   );
 
   const changePositions = useCallback(
@@ -1447,16 +1241,9 @@ export function RosterDataProvider({
         playerId: params.playerId,
         direction: params.direction,
       });
-      let squadPlayers = playersRef.current.filter(
+      const squadPlayers = playersRef.current.filter(
         (p) => p.squad_team === params.squadTeam
       );
-      if (liveModeRef.current) {
-        const live = await fetchLiveMasterState(mastersRef.current);
-        squadPlayers = liveSquadPlayersForTeam(playersRef.current, params.squadTeam, {
-          ...live,
-          masters: mastersRef.current,
-        });
-      }
       await refreshSquadCache(params.squadTeam, squadPlayers);
       void persistSnapshot();
       return serverEntries;
@@ -1476,6 +1263,7 @@ export function RosterDataProvider({
       desiredSubIds?: string[];
       nextPositions?: number[];
       needsTeamMove?: boolean;
+      /** Legacy offline op field — ignored (shared workspace). */
       liveNeedsAssign?: boolean;
       needsPosition?: boolean;
     }) => {
@@ -1494,18 +1282,6 @@ export function RosterDataProvider({
         throw new Error(message);
       }
 
-      if (
-        !isAllowedMasterAssignment(
-          workspaceKindRef.current,
-          params.squadTeam
-        )
-      ) {
-        const message =
-          'This master can only set starters on its own team.';
-        setError(message);
-        throw new Error(message);
-      }
-
       const prevTeam = player.squad_team;
       const canonical = getDepthCanonicalPosition(params.positionNumber);
       const computedNeedsPosition = !playerInDepthGroup(
@@ -1517,52 +1293,20 @@ export function RosterDataProvider({
             (a, b) => a - b
           )
         : normalizePositions(player.positions);
-
-      // Live mode: official claims decide "already on team", not flattened squad_team.
-      // Offline: use local claims — do not network-fetch (airplane mode).
-      let computedLiveNeedsAssign = false;
-      let livePrevClaimedTeams: SquadTeam[] = [];
-      let liveState: LiveMasterState | null = null;
-      if (liveModeRef.current) {
-        if (!isOnlineRef.current) {
-          liveState = {
-            masters: mastersRef.current,
-            claimsByPlayer: claimsByPlayerRef.current,
-            assignmentsByWorkspace: new Map(),
-          };
-        } else {
-          liveState = {
-            ...(await fetchLiveMasterState(mastersRef.current)),
-            masters: mastersRef.current,
-          };
-        }
-        const claims = liveState.claimsByPlayer.get(incomingId) ?? [];
-        const targetKind = masterKindForSquad(params.squadTeam);
-        computedLiveNeedsAssign = !claims.some((c) => c.kind === targetKind);
-        livePrevClaimedTeams = claims.map((c) => c.squadTeam);
-      }
-      const computedNeedsTeamMove = liveModeRef.current
-        ? computedLiveNeedsAssign
-        : prevTeam !== params.squadTeam;
+      const computedNeedsTeamMove = prevTeam !== params.squadTeam;
 
       // On replay, trust flags captured when the user made the edit — local
       // playersRef is already optimistic so recomputing would skip the assign.
       const needsPosition =
         params.needsPosition ?? computedNeedsPosition;
       const nextPositions = params.nextPositions ?? computedNextPositions;
-      const liveNeedsAssign =
-        params.liveNeedsAssign ?? computedLiveNeedsAssign;
       const needsTeamMove = params.needsTeamMove ?? computedNeedsTeamMove;
 
       const priorCache = depthCacheRef.current[params.squadTeam];
       const priorDepthCacheSnapshot = depthCacheRef.current;
-      const priorSquadPlayers = liveState
-        ? liveSquadPlayersForTeam(
-            workingBase,
-            params.squadTeam,
-            liveState
-          )
-        : workingBase.filter((p) => p.squad_team === params.squadTeam);
+      const priorSquadPlayers = workingBase.filter(
+        (p) => p.squad_team === params.squadTeam
+      );
       const priorSplit = getStartersAndSubs(
         priorSquadPlayers,
         priorCache?.depthEntries ?? []
@@ -1592,19 +1336,15 @@ export function RosterDataProvider({
         return p;
       });
 
-      // Live: start from claim-based squad (duals), then apply optimistic patches.
       const patchedById = new Map(working.map((p) => [p.id, p]));
-      const targetSquadPlayers = (
-        liveState
-          ? liveSquadPlayersForTeam(workingBase, params.squadTeam, liveState)
-          : working.filter((p) => p.squad_team === params.squadTeam)
-      ).map((p) => {
-        const patched = patchedById.get(p.id);
-        return patched
-          ? { ...patched, squad_team: params.squadTeam }
-          : { ...p, squad_team: params.squadTeam };
-      });
-      // Ensure incoming/outgoing are on the optimistic squad even if claims lag.
+      const targetSquadPlayers = working
+        .filter((p) => p.squad_team === params.squadTeam)
+        .map((p) => {
+          const patched = patchedById.get(p.id);
+          return patched
+            ? { ...patched, squad_team: params.squadTeam }
+            : { ...p, squad_team: params.squadTeam };
+        });
       if (!targetSquadPlayers.some((p) => p.id === incomingId)) {
         targetSquadPlayers.push({
           ...player,
@@ -1669,57 +1409,23 @@ export function RosterDataProvider({
         // Outbox replay: server writes only — do not touch React state (avoids
         // the "figuring out starters" flicker; local UI is already correct).
         if (replaying) {
-          if (liveModeRef.current) {
-            if (liveNeedsAssign) {
-              const live = await fetchLiveMasterState(mastersRef.current);
-              await adminLiveAssign({
-                rosterId,
-                masters: mastersRef.current,
-                playerId: incomingId,
-                target: params.squadTeam,
-                players: playersRef.current,
-                claimsByPlayer: live.claimsByPlayer,
-              });
-            }
-            if (needsPosition) {
-              await setPlayerPositions(incomingId, nextPositions, workspaceId);
-            }
-            if (outgoingId) {
-              const live = await fetchLiveMasterState(mastersRef.current);
-              const outClaims = live.claimsByPlayer.get(outgoingId) ?? [];
-              const onTarget = outClaims.some(
-                (c) => c.kind === masterKindForSquad(params.squadTeam)
-              );
-              if (!onTarget) {
-                await adminLiveAssign({
-                  rosterId,
-                  masters: mastersRef.current,
-                  playerId: outgoingId,
-                  target: params.squadTeam,
-                  players: playersRef.current,
-                  claimsByPlayer: live.claimsByPlayer,
-                });
-              }
-            }
-          } else {
-            if (needsTeamMove || needsPosition) {
-              await patchPlayer(
-                incomingId,
-                {
-                  ...(needsTeamMove ? { squad_team: params.squadTeam } : {}),
-                  ...(needsPosition ? { positions: nextPositions } : {}),
-                },
-                workspaceId
-              );
-            }
-            if (outgoingId) {
-              // Local row may already show on-team; still ensure server assign.
-              await setPlayerSquadTeam(
-                outgoingId,
-                params.squadTeam,
-                workspaceId
-              );
-            }
+          if (needsTeamMove || needsPosition) {
+            await patchPlayer(
+              incomingId,
+              {
+                ...(needsTeamMove ? { squad_team: params.squadTeam } : {}),
+                ...(needsPosition ? { positions: nextPositions } : {}),
+              },
+              workspaceId
+            );
+          }
+          if (outgoingId) {
+            // Local row may already show on-team; still ensure server assign.
+            await setPlayerSquadTeam(
+              outgoingId,
+              params.squadTeam,
+              workspaceId
+            );
           }
           await setDepthStarter({
             rosterId,
@@ -1739,136 +1445,6 @@ export function RosterDataProvider({
           return;
         }
 
-        if (liveModeRef.current) {
-          // Already on this master → only touch depth/positions (keep other claims).
-          // Not on this master → assign to T (clears other masters; no new duals).
-          if (liveNeedsAssign) {
-            const live = await fetchLiveMasterState(mastersRef.current);
-            await adminLiveAssign({
-              rosterId,
-              masters: mastersRef.current,
-              playerId: incomingId,
-              target: params.squadTeam,
-              players: playersRef.current,
-              claimsByPlayer: live.claimsByPlayer,
-            });
-            await refreshMasterClaims();
-          }
-          if (needsPosition) {
-            await setPlayerPositions(incomingId, nextPositions, workspaceId);
-            working = playersRef.current.map((p) =>
-              p.id === incomingId
-                ? {
-                    ...p,
-                    positions: nextPositions,
-                    position: formatPositionsShort(nextPositions),
-                    squad_team: params.squadTeam,
-                  }
-                : p
-            );
-            setPlayers(working);
-            playersRef.current = working;
-          }
-
-          if (outgoingId) {
-            const live = await fetchLiveMasterState(mastersRef.current);
-            const outClaims = live.claimsByPlayer.get(outgoingId) ?? [];
-            const onTarget = outClaims.some(
-              (c) => c.kind === masterKindForSquad(params.squadTeam)
-            );
-            if (!onTarget) {
-              await adminLiveAssign({
-                rosterId,
-                masters: mastersRef.current,
-                playerId: outgoingId,
-                target: params.squadTeam,
-                players: playersRef.current,
-                claimsByPlayer: live.claimsByPlayer,
-              });
-              await refreshMasterClaims();
-            }
-          }
-
-          if (swapGen !== starterSwapGenRef.current) return;
-
-          // Write starter BEFORE any depth reload (reload was wiping the swap).
-          muteRealtimeBriefly(10000);
-          const depthEntries = await setDepthStarter({
-            rosterId,
-            squadTeam: params.squadTeam,
-            workspaceId,
-            positionNumber: params.positionNumber,
-            slotIndex: params.slotIndex,
-            playerId: incomingId,
-            outgoingPlayerId: outgoingId,
-          });
-          if (swapGen !== starterSwapGenRef.current) return;
-
-          await refreshLivePlayers({ skipDepthSync: true });
-          if (swapGen !== starterSwapGenRef.current) return;
-
-          const liveAfter: LiveMasterState = {
-            ...(await fetchLiveMasterState(mastersRef.current)),
-            masters: mastersRef.current,
-          };
-          const squadPlayers = liveSquadPlayersForTeam(
-            playersRef.current,
-            params.squadTeam,
-            liveAfter
-          );
-          const split = getStartersAndSubs(squadPlayers, depthEntries);
-          const subIdSet = new Set(split.subs.map((p) => p.id));
-          const orderedSubIds = [
-            ...desiredSubIds.filter((id) => subIdSet.has(id)),
-            ...split.subs
-              .map((p) => p.id)
-              .filter((id) => !desiredSubIds.includes(id)),
-          ];
-          const subEntries = await replaceSubOrder({
-            rosterId,
-            squadTeam: params.squadTeam,
-            workspaceId,
-            orderedPlayerIds: orderedSubIds,
-          });
-          if (swapGen !== starterSwapGenRef.current) return;
-
-          setError(null);
-          setDepthCache((prev) => ({
-            ...prev,
-            [params.squadTeam]: { depthEntries, subEntries },
-          }));
-
-          // Refresh depth for teams the player left (move case only).
-          if (liveNeedsAssign) {
-            for (const left of livePrevClaimedTeams) {
-              if (left === params.squadTeam) continue;
-              const leftWs = workspaceIdForSquad(left);
-              const leftPlayers = liveSquadPlayersForTeam(
-                playersRef.current,
-                left,
-                liveAfter
-              );
-              if (!leftWs || leftPlayers.length === 0) {
-                setDepthCache((prev) => ({
-                  ...prev,
-                  [left]: { depthEntries: [], subEntries: [] },
-                }));
-              } else {
-                const cache = await syncAndLoadSquad(
-                  rosterId,
-                  left,
-                  leftWs,
-                  leftPlayers
-                );
-                if (swapGen !== starterSwapGenRef.current) return;
-                setDepthCache((prev) => ({ ...prev, [left]: cache }));
-              }
-            }
-          }
-          return;
-        }
-
-        // Personal / head-coach path.
         if (needsTeamMove || needsPosition) {
           const updated = await patchPlayer(
             incomingId,
@@ -1979,39 +1555,16 @@ export function RosterDataProvider({
           desiredSubIds: computedDesiredSubIds,
           nextPositions,
           needsTeamMove,
-          liveNeedsAssign,
           needsPosition,
         }))
       ) {
-        if (liveModeRef.current) {
-          applyOfflineAssign(
-            incomingId,
-            params.squadTeam,
-            playersRef.current.find((p) => p.id === incomingId) ?? null
-          );
-        }
         void persistSnapshot();
         return optimisticCache.depthEntries;
       }
 
       // Always await on replay so the outbox doesn't shift before the write finishes.
-      // Live mode also awaits so UI/other tabs don't race a depth reload.
-      if (liveModeRef.current || replaying) {
-        try {
-          await persist();
-        } catch (e) {
-          if (swapGen === starterSwapGenRef.current && !replaying) {
-            setPlayers(workingBase);
-            playersRef.current = workingBase;
-            setDepthCache(priorDepthCacheSnapshot);
-            membershipRef.current = membershipKey(workingBase);
-            muteRealtimeBriefly(500);
-            setError(
-              e instanceof Error ? e.message : 'Failed to update starter'
-            );
-          }
-          throw e;
-        }
+      if (replaying) {
+        await persist();
         void persistSnapshot();
         return (
           depthCacheRef.current[params.squadTeam]?.depthEntries ??
@@ -2019,7 +1572,7 @@ export function RosterDataProvider({
         );
       }
 
-      // Personal / coach online: keep snappy background persist.
+      // Online: keep snappy background persist.
       void persist()
         .then(() => {
           void persistSnapshot();
@@ -2036,14 +1589,7 @@ export function RosterDataProvider({
 
       return optimisticCache.depthEntries;
     },
-    [
-      rosterId,
-      refreshLivePlayers,
-      refreshMasterClaims,
-      queueIfNeeded,
-      persistSnapshot,
-      applyOfflineAssign,
-    ]
+    [rosterId, queueIfNeeded, persistSnapshot]
   );
 
   const moveSub = useCallback(
@@ -2105,19 +1651,11 @@ export function RosterDataProvider({
       const workspaceId = workspaceIdForSquad(params.squadTeam);
       if (!workspaceId) throw new Error('No active workspace');
 
-      let squadPlayers = playersRef.current.filter(
+      const squadPlayers = playersRef.current.filter(
         (p) => p.squad_team === params.squadTeam
       );
-      if (liveModeRef.current) {
-        const live = await fetchLiveMasterState(mastersRef.current);
-        squadPlayers = liveSquadPlayersForTeam(
-          playersRef.current,
-          params.squadTeam,
-          { ...live, masters: mastersRef.current }
-        );
-      }
 
-      // Ensure bench rows exist (Live used to load without syncing).
+      // Ensure bench rows exist before relative move.
       if (
         squadPlayers.length > 0 &&
         !(depthCacheRef.current[params.squadTeam]?.subEntries ?? []).some(
@@ -2186,13 +1724,6 @@ export function RosterDataProvider({
         return;
       }
       muteRealtimeBriefly(2000);
-      if (liveModeRef.current) {
-        await adminLiveSetPoolRanks({
-          masters: mastersRef.current,
-          ranks: toWrite,
-        });
-        return;
-      }
       const workspaceId = workspaceIdRef.current;
       if (!workspaceId) throw new Error('No active workspace');
       await setPlayerTeamRanks(toWrite, workspaceId);
@@ -2337,50 +1868,6 @@ export function RosterDataProvider({
     [applyAvailablePlan, queueAbsoluteRanks, persistSnapshot]
   );
 
-  const removeFromLiveTeam = useCallback(
-    async (playerId: string, squadTeam: SquadTeam) => {
-      if (
-        await queueIfNeeded({
-          type: 'adminLiveRemoveFromTeam',
-          playerId,
-          squadTeam,
-        })
-      ) {
-        applyOfflineRemoveFromTeam(playerId, squadTeam);
-        const next = playersRef.current.map((p) =>
-          p.id === playerId && p.squad_team === squadTeam
-            ? { ...p, squad_team: null, available_pinned: false }
-            : p
-        );
-        setPlayers(next);
-        playersRef.current = next;
-        return;
-      }
-
-      const live = await fetchLiveMasterState(mastersRef.current);
-      await adminLiveRemoveFromTeam({
-        rosterId,
-        masters: mastersRef.current,
-        playerId,
-        squadTeam,
-        players: playersRef.current,
-        claimsByPlayer: live.claimsByPlayer,
-      });
-      muteRealtimeBriefly(1500);
-      await refreshMasterClaims();
-      await refreshLivePlayers({ forceSync: true });
-      void persistSnapshot();
-    },
-    [
-      rosterId,
-      queueIfNeeded,
-      applyOfflineRemoveFromTeam,
-      refreshMasterClaims,
-      refreshLivePlayers,
-      persistSnapshot,
-    ]
-  );
-
   const replayApiRef = useRef({
     assignSquad,
     savePlayer,
@@ -2395,7 +1882,6 @@ export function RosterDataProvider({
     moveAvailableToBottomAction,
     resetAvailableOrder,
     applyAvailablePlan,
-    removeFromLiveTeam,
   });
   replayApiRef.current = {
     assignSquad,
@@ -2411,7 +1897,6 @@ export function RosterDataProvider({
     moveAvailableToBottomAction,
     resetAvailableOrder,
     applyAvailablePlan,
-    removeFromLiveTeam,
   };
 
   const persistSnapshotRef = useRef(persistSnapshot);
@@ -2483,7 +1968,8 @@ export function RosterDataProvider({
             await api.applyAvailablePlan(op.ranks, { forceWrite: true });
             break;
           case 'adminLiveRemoveFromTeam':
-            await api.removeFromLiveTeam(op.playerId, op.squadTeam);
+            // Legacy Live op — clear assignment on shared workspace.
+            await api.assignSquad(op.playerId, null);
             break;
           default:
             break;
@@ -2501,12 +1987,53 @@ export function RosterDataProvider({
       await reconcileFromServerRef.current({ force: true });
       await persistSnapshotRef.current();
     });
+    registerConflictHandlers({
+      getRosterName: () => rosterRef.current?.name ?? 'This team',
+      getSnapshot: async () => {
+        await persistSnapshotRef.current();
+        const s = scopeRef.current;
+        if (!s) return null;
+        const fromDisk = await loadRosterSnapshot(s);
+        if (fromDisk) return fromDisk;
+        if (playersRef.current.length === 0 && !rosterRef.current) return null;
+        const slice = exportSnapshotSliceRef.current();
+        return {
+          version: 2 as const,
+          scope: s,
+          savedAt: Date.now(),
+          roster: rosterRef.current,
+          players: playersRef.current,
+          depthCache: depthCacheRef.current,
+          claimsEntries: slice.claimsEntries,
+          claimedPlayers: slice.claimedPlayers,
+          depthByKind: slice.depthByKind,
+        };
+      },
+      discardLocalAndPull: async () => {
+        const s = scopeRef.current;
+        if (s) {
+          const { clearOfflineCacheForRoster } = await import(
+            '@/lib/offline/clearRosterCache'
+          );
+          await clearOfflineCacheForRoster(s.rosterId);
+        }
+        muteRealtimeUntilRef.current = Date.now() + 1_500;
+        await reconcileFromServerRef.current({ force: true });
+        await persistSnapshotRef.current();
+      },
+    });
     retrySync();
     return () => {
       registerReplay(null);
       registerDrainComplete(null);
+      registerConflictHandlers(null);
     };
-  }, [registerReplay, registerDrainComplete, retrySync]);
+  }, [
+    registerReplay,
+    registerDrainComplete,
+    registerConflictHandlers,
+    retrySync,
+  ]);
 
   const value = useMemo<RosterDataValue>(
     () => ({
@@ -2531,7 +2058,6 @@ export function RosterDataProvider({
       moveAvailableToTop: moveAvailableToTopAction,
       moveAvailableToBottom: moveAvailableToBottomAction,
       resetAvailableOrder,
-      removeFromLiveTeam,
     }),
     [
       rosterId,
@@ -2555,7 +2081,6 @@ export function RosterDataProvider({
       moveAvailableToTopAction,
       moveAvailableToBottomAction,
       resetAvailableOrder,
-      removeFromLiveTeam,
     ]
   );
 

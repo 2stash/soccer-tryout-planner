@@ -6,7 +6,8 @@ import {
 } from '@/lib/offline/types';
 
 function storageKey(scope: OfflineScope): string {
-  return `offlineOutbox:v1:${scopeKey(scope)}`;
+  // v2: roster-only scope (invalidates personal/live/master outboxes).
+  return `offlineOutbox:v2:${scopeKey(scope)}`;
 }
 
 export async function loadOutbox(scope: OfflineScope): Promise<OfflineOp[]> {

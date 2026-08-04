@@ -1,7 +1,5 @@
 import { Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { AvailabilityTags } from '@/components/AvailabilityTags';
-import { MasterConflictChips } from '@/components/MasterConflictChips';
-import { useMasterConflicts } from '@/lib/MasterConflictContext';
 import {
   availableRankMoveFlags,
   type GradeFilter,
@@ -258,7 +256,6 @@ function AvailableRankRow({
           </Text>
         ) : null}
         <AvailabilityTags playerId={player.id} compact />
-        <MasterConflictChips playerId={player.id} compact />
       </Pressable>
 
       {addActions.length > 0 ? (
@@ -350,14 +347,11 @@ function PlayerCard({
   }
 
   const player = row.player;
-  const { labelsFor } = useMasterConflicts();
-  const masterAlso = labelsFor(player.id);
   const starter = isStarterRole(row.role);
   const conflict = Boolean(row.conflict);
   const also = row.alsoLabels?.length
     ? `Also ${row.alsoLabels.join(', ')}`
     : null;
-  const hasMasterConflict = masterAlso.length > 0;
   const pos = formatPositionsShort(player.positions);
 
   return (
@@ -366,7 +360,7 @@ function PlayerCard({
         styles.card,
         (showMove || showStarterActions) && styles.cardWithMove,
         starter && styles.starterCard,
-        (conflict || hasMasterConflict) && styles.conflictCard,
+        conflict && styles.conflictCard,
         sizeStyle,
       ]}
     >
@@ -380,7 +374,7 @@ function PlayerCard({
             style={[
               styles.role,
               starter && styles.starterRole,
-              (conflict || hasMasterConflict) && styles.conflictRole,
+              conflict && styles.conflictRole,
               Boolean(badge) && styles.subBadge,
             ]}
             numberOfLines={1}
@@ -406,9 +400,6 @@ function PlayerCard({
         {player.squad_team == null ||
         player.squad_team === UNAVAILABLE_POOL ? (
           <AvailabilityTags playerId={player.id} compact />
-        ) : null}
-        {hasMasterConflict ? (
-          <MasterConflictChips playerId={player.id} compact />
         ) : null}
       </Pressable>
       {showStarterActions ? (

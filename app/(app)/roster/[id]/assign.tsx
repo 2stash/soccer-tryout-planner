@@ -28,13 +28,6 @@ import {
   orderAvailablePlayers,
   type GradeFilter,
 } from '@/lib/availableRank';
-import { AdminLiveAssign } from '@/components/AdminLiveAssign';
-import { AvailabilityTags } from '@/components/AvailabilityTags';
-import { MasterConflictChips } from '@/components/MasterConflictChips';
-import { useActiveRole } from '@/lib/ActiveRoleContext';
-import { useMasterConflicts } from '@/lib/MasterConflictContext';
-import { isMasterKind, type MasterKind } from '@/lib/masterConflicts';
-import { ownSquadForWorkspace } from '@/lib/masterWorkspace';
 import { comparePlayersByName } from '@/lib/playerSort';
 import {
   CLASS_ORDER_DESC,
@@ -44,16 +37,7 @@ import {
 import { colors, layout } from '@/constants/theme';
 
 type PoolKey = RankPool | SquadTeam;
-type MasterTabKey = `master:${MasterKind}`;
-type PhoneTabKey = PoolKey | MasterTabKey;
-
-function isMasterTabKey(key: PhoneTabKey): key is MasterTabKey {
-  return typeof key === 'string' && key.startsWith('master:');
-}
-
-function masterKindFromTab(key: MasterTabKey): MasterKind {
-  return key.slice('master:'.length) as MasterKind;
-}
+type PhoneTabKey = PoolKey;
 
 function isRankPoolKey(key: PoolKey): key is RankPool {
   return key === 'available' || key === 'unavailable';
@@ -86,28 +70,7 @@ const THREE_TEAM_COLS_MIN = 900;
 
 export default function AssignSquadsScreen() {
   const { session, loading: authLoading, configured } = useAuth();
-  const { isAdminLiveMode } = useActiveRole();
-
-  if (!authLoading && (!configured || !session)) {
-    return <Redirect href="/(auth)/sign-in" />;
-  }
-
-  if (isAdminLiveMode) {
-    return <AdminLiveAssign />;
-  }
-
-  return <AssignSquadsPersonal />;
-}
-
-/** Personal / head-coach Assign (unchanged flows). */
-function AssignSquadsPersonal() {
   const { width, isPhone, isCompact } = useLayout();
-  const { workspaceKind } = useActiveRole();
-  const {
-    officialPlayers,
-    otherMasterKinds,
-    masterLabel,
-  } = useMasterConflicts();
   const {
     roster,
     players,
@@ -130,38 +93,22 @@ function AssignSquadsPersonal() {
   const threeTeamCols = !isPhone && width >= THREE_TEAM_COLS_MIN;
   const tightTeamRows = threeTeamCols;
 
-  const isMasterView =
-    workspaceKind != null && isMasterKind(workspaceKind);
-  const ownSquad = ownSquadForWorkspace(workspaceKind);
-
-  const poolTabs = useMemo((): { key: PhoneTabKey; label: string }[] => {
-    if (isMasterView && ownSquad) {
-      const ownLabel =
-        SQUAD_TEAMS.find((t) => t.id === ownSquad)?.label ?? ownSquad;
-      return [
-        { key: 'available', label: 'Available' },
-        { key: 'unavailable', label: 'Unavailable' },
-        { key: ownSquad, label: ownLabel },
-        ...otherMasterKinds.map((kind) => ({
-          key: `master:${kind}` as MasterTabKey,
-          label: masterLabel(kind),
-        })),
-      ];
-    }
-    return [
+  const poolTabs = useMemo(
+    (): { key: PhoneTabKey; label: string }[] => [
       { key: 'available', label: 'Available' },
       { key: 'unavailable', label: 'Unavailable' },
       ...SQUAD_TEAMS.map((t) => ({
         key: t.id as PoolKey,
         label: t.label,
       })),
-    ];
-  }, [isMasterView, ownSquad, otherMasterKinds, masterLabel]);
+    ],
+    []
+  );
 
-  const editableSquads = useMemo((): SquadTeam[] => {
-    if (isMasterView && ownSquad) return [ownSquad];
-    return SQUAD_TEAMS.map((t) => t.id);
-  }, [isMasterView, ownSquad]);
+  const editableSquads = useMemo(
+    (): SquadTeam[] => SQUAD_TEAMS.map((t) => t.id),
+    []
+  );
 
   const availablePlayers = useMemo(
     () => orderAvailablePlayers(playersInRankPool(players, 'available')),
@@ -345,7 +292,6 @@ function AssignSquadsPersonal() {
     return byTeam[key];
   }
 
-  // Keep phone tab valid when switching master/personal roles.
   useEffect(() => {
     const valid = poolTabs.some((t) => t.key === phoneTab);
     if (!valid) setPhoneTab('available');
@@ -353,6 +299,10 @@ function AssignSquadsPersonal() {
 
   function classCountsLine(list: Player[]) {
     return formatClassCounts(list);
+  }
+
+  if (!authLoading && (!configured || !session)) {
+    return <Redirect href="/(auth)/sign-in" />;
   }
 
   function renderRankedActions(player: Player, busy: boolean, poolKey: RankPool) {
@@ -464,7 +414,7 @@ function AssignSquadsPersonal() {
                   : styles.ghostBtnText
             }
           >
-            {short ? 'Out' : 'Unavail'}
+            Unavail
           </Text>
         </Pressable>
         <Pressable
@@ -605,8 +555,6 @@ function AssignSquadsPersonal() {
               {meta}
             </Text>
           ) : null}
-          <AvailabilityTags playerId={player.id} compact />
-          <MasterConflictChips playerId={player.id} compact />
         </View>
         {renderRankedActions(player, busy, poolKey)}
       </View>
@@ -640,67 +588,8 @@ function AssignSquadsPersonal() {
               {meta}
             </Text>
           ) : null}
-          <MasterConflictChips playerId={player.id} compact />
         </View>
         {renderTeamActions(player, team, busy)}
-      </View>
-    );
-  }
-
-  function renderReadonlyMasterPanel(kind: MasterKind) {
-    const list = officialPlayers(kind, players);
-    const counts = classCountsLine(list);
-    return (
-      <View
-        key={kind}
-        style={[
-          styles.panel,
-          styles.teamPanel,
-          threeTeamCols && styles.teamPanelThird,
-          styles.readonlyPanel,
-        ]}
-      >
-        <View style={styles.panelHeader}>
-          <View style={styles.panelTitleBlock}>
-            <Text style={styles.sectionTitle}>{masterLabel(kind)}</Text>
-            <Text style={styles.readonlyHint}>Read-only master</Text>
-            {counts ? (
-              <Text style={styles.classCounts} numberOfLines={2}>
-                {counts}
-              </Text>
-            ) : null}
-          </View>
-          <Text style={styles.count}>{list.length}</Text>
-        </View>
-        {list.length === 0 ? (
-          <Text style={styles.empty}>No players yet</Text>
-        ) : (
-          <View style={styles.list}>
-            {list.map((player, index) => {
-              const meta = playerMeta(player);
-              return (
-                <View
-                  key={player.id}
-                  style={[
-                    styles.row,
-                    index % 2 === 1 && styles.rowAlt,
-                  ]}
-                >
-                  <View style={styles.playerCell}>
-                    <Text style={styles.playerName} numberOfLines={1}>
-                      {player.last_name}, {player.first_name}
-                    </Text>
-                    {meta ? (
-                      <Text style={styles.playerMeta} numberOfLines={1}>
-                        {meta}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-        )}
       </View>
     );
   }
@@ -820,23 +709,10 @@ function AssignSquadsPersonal() {
     );
   }
 
-  const phoneIsMasterRo =
-    isMasterTabKey(phoneTab) && isMasterView;
-  const phonePool: PoolKey | null = !isMasterTabKey(phoneTab)
-    ? phoneTab
-    : null;
-  const phoneList =
-    phonePool != null
-      ? poolPlayers(phonePool)
-      : phoneIsMasterRo
-        ? officialPlayers(masterKindFromTab(phoneTab), players)
-        : [];
-  const phonePoolCounts =
-    phonePool != null && isRankPoolKey(phonePool)
-      ? classCountsLine(rankedList(phonePool))
-      : phonePool != null
-        ? classCountsLine(byTeam[phonePool])
-        : classCountsLine(phoneList);
+  const phoneList = poolPlayers(phoneTab);
+  const phonePoolCounts = isRankPoolKey(phoneTab)
+    ? classCountsLine(rankedList(phoneTab))
+    : classCountsLine(byTeam[phoneTab]);
 
   return (
     <View style={styles.screen}>
@@ -853,13 +729,9 @@ function AssignSquadsPersonal() {
             {roster ? `${roster.name} · Assign Squads` : 'Assign Squads'}
           </Text>
           <Text style={styles.sub}>
-            {isMasterView
-              ? isPhone
-                ? 'Edit your team, Available, and Unavailable. Other masters are read-only. Tags show if Available players are already claimed elsewhere.'
-                : 'Edit your master team plus Available / Unavailable. Other masters shown read-only. Available tags mean claimed on another master.'
-              : isPhone
-                ? '★ locks at top. ⇈/⇊ jump within band. ↑↓ nudge. Move between Available, Unavailable, and squads.'
-                : 'Rank Available and Unavailable (#1 top). Filter by grade; Sort resets unstarred order.'}
+            {isPhone
+              ? '★ locks at top. ⇈/⇊ jump within band. ↑↓ nudge. Move between Available, Unavailable, and squads.'
+              : 'Rank Available and Unavailable (#1 top). Filter by grade; Sort resets unstarred order.'}
           </Text>
 
           {displayError ? (
@@ -874,12 +746,9 @@ function AssignSquadsPersonal() {
               <View style={styles.segmentRow}>
                 {poolTabs.map((tab) => {
                   const active = phoneTab === tab.key;
-                  const count = isMasterTabKey(tab.key)
-                    ? officialPlayers(masterKindFromTab(tab.key), players)
-                        .length
-                    : isRankPoolKey(tab.key)
-                      ? rankedList(tab.key).length
-                      : byTeam[tab.key as SquadTeam].length;
+                  const count = isRankPoolKey(tab.key)
+                    ? rankedList(tab.key).length
+                    : byTeam[tab.key as SquadTeam].length;
                   return (
                     <Pressable
                       key={tab.key}
@@ -911,14 +780,14 @@ function AssignSquadsPersonal() {
                 })}
               </View>
 
-              {phonePool != null && isRankPoolKey(phonePool) ? (
-                renderRankedPanel(phonePool)
-              ) : phonePool != null && isSquadTeam(phonePool) ? (
+              {isRankPoolKey(phoneTab) ? (
+                renderRankedPanel(phoneTab)
+              ) : isSquadTeam(phoneTab) ? (
                 <View style={styles.panel}>
                   <View style={styles.panelHeader}>
                     <View style={styles.panelTitleBlock}>
                       <Text style={styles.sectionTitle}>
-                        {poolTabs.find((t) => t.key === phonePool)?.label}
+                        {poolTabs.find((t) => t.key === phoneTab)?.label}
                       </Text>
                       {phonePoolCounts ? (
                         <Text style={styles.classCounts} numberOfLines={2}>
@@ -935,13 +804,11 @@ function AssignSquadsPersonal() {
                   ) : (
                     <View style={styles.list}>
                       {phoneList.map((player, index) =>
-                        renderTeamRow(player, index, phonePool)
+                        renderTeamRow(player, index, phoneTab)
                       )}
                     </View>
                   )}
                 </View>
-              ) : phoneIsMasterRo ? (
-                renderReadonlyMasterPanel(masterKindFromTab(phoneTab))
               ) : null}
             </>
           ) : (
@@ -953,17 +820,10 @@ function AssignSquadsPersonal() {
               <View
                 style={[
                   styles.teamsRow,
-                  (isMasterView || threeTeamCols) && styles.teamsRowThree,
+                  threeTeamCols && styles.teamsRowThree,
                 ]}
               >
-                {isMasterView && ownSquad
-                  ? [
-                      renderTeamPanel(ownSquad),
-                      ...otherMasterKinds.map((kind) =>
-                        renderReadonlyMasterPanel(kind)
-                      ),
-                    ]
-                  : SQUAD_TEAMS.map((team) => renderTeamPanel(team.id))}
+                {SQUAD_TEAMS.map((team) => renderTeamPanel(team.id))}
               </View>
             </>
           )}

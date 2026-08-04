@@ -9,12 +9,12 @@ import type {
   Roster,
   SquadTeam,
 } from '@/lib/types';
-import type { AdminEditMode } from '@/lib/ActiveRoleContext';
 
+/** Offline scope is roster-only after shared-workspace cutover. */
 export type OfflineScope = {
   rosterId: string;
+  /** Shared workspace id (for replay writes); not part of storage key. */
   workspaceId: string;
-  adminEditMode: AdminEditMode;
 };
 
 export type OfflineOpBase = {
@@ -110,6 +110,7 @@ type OfflineOpBody =
       ranks: AvailableRankPlan[];
     }
   | {
+      /** Legacy Live op; replayed as assignSquad(null). */
       type: 'adminLiveRemoveFromTeam';
       playerId: string;
       squadTeam: SquadTeam;
@@ -120,22 +121,26 @@ export type OfflineOp = OfflineOpBase & OfflineOpBody;
 /** Op payload before id/at are assigned. */
 export type OfflineOpInput = OfflineOpBody;
 
-/** Serializable snapshot for offline boot + crash recovery. */
+/**
+ * Serializable snapshot for offline boot + crash recovery.
+ * version 2 invalidates pre-shared-workspace caches (v1 keys ignored).
+ */
 export type RosterSnapshot = {
-  version: 1;
+  version: 2;
   scope: OfflineScope;
   savedAt: number;
   roster: Roster | null;
   players: Player[];
   depthCache: DepthCacheMap;
-  /** Serialized Map entries for live claims. */
+  /** Kept for hydrate API compatibility; always empty under shared workspace. */
   claimsEntries: [string, MasterClaim[]][];
   claimedPlayers: Player[];
   depthByKind: Partial<Record<MasterKind, SquadDepthCache>>;
 };
 
+/** Storage key is roster-only so personal/live overlays cannot collide. */
 export function scopeKey(scope: OfflineScope): string {
-  return `${scope.rosterId}:${scope.workspaceId}:${scope.adminEditMode}`;
+  return scope.rosterId;
 }
 
 export function newOpId(): string {

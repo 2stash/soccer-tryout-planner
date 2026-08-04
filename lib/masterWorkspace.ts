@@ -6,11 +6,15 @@ import {
   type MasterKind,
 } from '@/lib/masterConflicts';
 
-/** Allowed squad targets when writing under a master workspace. */
+/**
+ * Shared workspace (and legacy personal): all assignment targets allowed.
+ * Legacy master kinds retained only for old offline ops / migration edge cases.
+ */
 export function allowedAssignmentsForWorkspace(
   kind: WorkspaceKind | null
 ): PlayerAssignment[] | null {
-  if (!kind || !isMasterKind(kind)) return null; // personal: all assignments OK
+  if (!kind || kind === 'shared' || kind === 'personal') return null;
+  if (!isMasterKind(kind)) return null;
   return [canonicalSquadForMaster(kind), UNAVAILABLE_POOL];
 }
 
@@ -18,8 +22,9 @@ export function isAllowedMasterAssignment(
   kind: WorkspaceKind | null,
   team: PlayerAssignment | null
 ): boolean {
-  if (!kind || !isMasterKind(kind)) return true;
-  if (team == null) return true; // Available
+  if (!kind || kind === 'shared' || kind === 'personal') return true;
+  if (!isMasterKind(kind)) return true;
+  if (team == null) return true;
   if (team === UNAVAILABLE_POOL) return true;
   return team === canonicalSquadForMaster(kind);
 }
@@ -27,7 +32,8 @@ export function isAllowedMasterAssignment(
 export function ownSquadForWorkspace(
   kind: WorkspaceKind | null
 ): SquadTeam | null {
-  if (!kind || !isMasterKind(kind)) return null;
+  if (!kind || kind === 'shared' || kind === 'personal') return null;
+  if (!isMasterKind(kind)) return null;
   return canonicalSquadForMaster(kind);
 }
 
