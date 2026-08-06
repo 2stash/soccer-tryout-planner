@@ -852,56 +852,55 @@ export function RosterDataProvider({
       const workspaceId = workspaceIdRef.current;
       if (!workspaceId) throw new Error('No active workspace');
 
-      if (await queueIfNeeded({ type: 'savePlayer', playerId, input })) {
-        const nextPositions = normalizePositions(input.positions);
-        const updated: Player = {
-          ...(prev as Player),
-          first_name: input.first_name,
-          last_name: input.last_name,
-          school_year: input.school_year,
-          positions: nextPositions,
-          position: formatPositionsShort(nextPositions),
-        };
+      const nextPositions = normalizePositions(input.positions);
+      const optimisticPlayer: Player = {
+        ...(prev as Player),
+        first_name: input.first_name,
+        last_name: input.last_name,
+        school_year: input.school_year,
+        positions: nextPositions,
+        position: formatPositionsShort(nextPositions),
+      };
+
+      // Apply locally first so edit sheets can close without a Saving… wait.
+      const applyLocal = (row: Player) => {
         const next = playersRef.current.map((p) =>
-          p.id === playerId ? updated : p
+          p.id === playerId ? row : p
         );
         setPlayers(next);
         playersRef.current = next;
-        return updated;
+        return next;
+      };
+
+      if (await queueIfNeeded({ type: 'savePlayer', playerId, input })) {
+        applyLocal(optimisticPlayer);
+        return optimisticPlayer;
       }
 
-      const updated = await updatePlayer(playerId, input, workspaceId);
-      const next = playersRef.current.map((p) =>
-        p.id === playerId ? updated : p
-      );
-      setPlayers(next);
-      playersRef.current = next;
+      const next = applyLocal(optimisticPlayer);
       muteRealtimeBriefly();
       membershipRef.current = membershipKey(next);
 
       const prevPositions = normalizePositions(prev?.positions);
-      const nextPositions = normalizePositions(updated.positions);
       const positionsChanged =
         prevPositions.join(',') !== nextPositions.join(',');
 
-      if (positionsChanged && isSquadTeam(updated.squad_team)) {
-        const squadTeam = updated.squad_team;
+      if (positionsChanged && isSquadTeam(optimisticPlayer.squad_team)) {
+        const squadTeam = optimisticPlayer.squad_team;
         const squadPlayers = next.filter((p) => p.squad_team === squadTeam);
 
-        // Instant UI: patch cache before waiting on the network
-        const optimistic = optimisticPatchPositions({
+        const optimisticCache = optimisticPatchPositions({
           cache: depthCacheRef.current[squadTeam],
           squadPlayers,
-          player: updated,
+          player: optimisticPlayer,
           prevPositions,
           nextPositions,
         });
         setDepthCache((prevCache) => ({
           ...prevCache,
-          [squadTeam]: optimistic,
+          [squadTeam]: optimisticCache,
         }));
 
-        // Narrow background sync for only changed position groups
         const affected = [...new Set([...prevPositions, ...nextPositions])];
         void syncAffectedPositions(
           rosterId,
@@ -924,7 +923,16 @@ export function RosterDataProvider({
       }
 
       void persistSnapshot();
-      return updated;
+
+      try {
+        const updated = await updatePlayer(playerId, input, workspaceId);
+        applyLocal(updated);
+        membershipRef.current = membershipKey(playersRef.current);
+        return updated;
+      } catch (e) {
+        if (prev) applyLocal(prev);
+        throw e;
+      }
     },
     [rosterId, queueIfNeeded, persistSnapshot]
   );
@@ -1013,24 +1021,50 @@ export function RosterDataProvider({
         return;
       }
 
-      // Changing pools/teams clears the star pin.
-      const updated =
-        prev?.available_pinned && prev.squad_team !== team
-          ? await patchPlayer(
-              playerId,
-              {
-                squad_team: team,
-                available_pinned: false,
-              },
-              workspaceId
-            )
-          : await setPlayerSquadTeam(playerId, team, workspaceId);
+      // Optimistic local move first so UI updates before the network round-trip.
+      const optimistic: Player = {
+        ...(prev as Player),
+        squad_team: team,
+        available_pinned: false,
+      };
       let next = playersRef.current.map((p) =>
-        p.id === playerId ? updated : p
+        p.id === playerId ? optimistic : p
       );
       setPlayers(next);
       playersRef.current = next;
       muteRealtimeBriefly();
+      membershipRef.current = membershipKey(next);
+
+      let updated: Player;
+      try {
+        updated =
+          prev?.available_pinned && prev.squad_team !== team
+            ? await patchPlayer(
+                playerId,
+                {
+                  squad_team: team,
+                  available_pinned: false,
+                },
+                workspaceId
+              )
+            : await setPlayerSquadTeam(playerId, team, workspaceId);
+      } catch (e) {
+        if (prev) {
+          next = playersRef.current.map((p) =>
+            p.id === playerId ? prev : p
+          );
+          setPlayers(next);
+          playersRef.current = next;
+          membershipRef.current = membershipKey(next);
+        }
+        throw e;
+      }
+
+      next = playersRef.current.map((p) =>
+        p.id === playerId ? updated : p
+      );
+      setPlayers(next);
+      playersRef.current = next;
       membershipRef.current = membershipKey(next);
 
       const touched = new Set<SquadTeam>();

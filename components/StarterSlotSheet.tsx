@@ -274,8 +274,8 @@ export function StarterSlotSheet({
   const [lastName, setLastName] = useState('');
   const [schoolYear, setSchoolYear] = useState('');
   const [positions, setPositions] = useState<number[]>([]);
+  const [squadTeam, setSquadTeam] = useState<PlayerAssignment | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [swappingId, setSwappingId] = useState<string | null>(null);
   const [playerSearch, setPlayerSearch] = useState('');
@@ -286,6 +286,7 @@ export function StarterSlotSheet({
       setLastName('');
       setSchoolYear('');
       setPositions([]);
+      setSquadTeam(null);
       setError(null);
       return;
     }
@@ -293,6 +294,7 @@ export function StarterSlotSheet({
     setLastName(player.last_name ?? '');
     setSchoolYear(normalizeSchoolYear(player.school_year));
     setPositions(normalizePositions(player.positions));
+    setSquadTeam(player.squad_team);
     setError(null);
   }, [player]);
 
@@ -300,7 +302,6 @@ export function StarterSlotSheet({
   useEffect(() => {
     if (!visible || !selection) {
       setSwappingId(null);
-      setSaving(false);
       setDeleting(false);
       setError(null);
       setPlayerSearch('');
@@ -354,42 +355,36 @@ export function StarterSlotSheet({
   if (!selection) return null;
   const slot = selection;
 
-  async function handleSave() {
+  function handleSave() {
     if (!player) return;
     setError(null);
     if (!firstName.trim() || !lastName.trim()) {
       setError('First and last name are required.');
       return;
     }
-    setSaving(true);
-    try {
-      await onSave(player.id, {
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        school_year: schoolYear.trim(),
-        positions,
-        position_rank: player.position_rank,
-        team_rank: player.team_rank,
-      });
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleAssign(team: PlayerAssignment | null) {
-    if (!onAssignSquad || !player) return;
-    setError(null);
-    setSaving(true);
-    try {
-      await onAssignSquad(player.id, team);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update team');
-    } finally {
-      setSaving(false);
-    }
+    const input = {
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      school_year: schoolYear.trim(),
+      positions,
+      position_rank: player.position_rank,
+      team_rank: player.team_rank,
+    };
+    const teamChanged =
+      Boolean(onAssignSquad) && squadTeam !== player.squad_team;
+    const playerId = player.id;
+    // Close first; persistence applies optimistically in the data layer.
+    onClose();
+    void (async () => {
+      try {
+        await onSave(playerId, input);
+        if (teamChanged && onAssignSquad) {
+          await onAssignSquad(playerId, squadTeam);
+        }
+      } catch (e) {
+        console.warn(e instanceof Error ? e.message : 'Save failed');
+      }
+    })();
   }
 
   async function handleDelete() {
@@ -442,7 +437,7 @@ export function StarterSlotSheet({
     }
   }
 
-  const busy = saving || deleting || Boolean(swappingId);
+  const busy = deleting || Boolean(swappingId);
 
   const positionLabel = formatDepthGroupLabel(slot.positionGroup);
   const pane: StarterSheetPane = slot.pane ?? 'both';
@@ -532,9 +527,9 @@ export function StarterSlotSheet({
                     <View style={styles.field}>
                       <Text style={styles.label}>Team</Text>
                       <SquadSelect
-                        value={player.squad_team}
+                        value={squadTeam}
                         disabled={busy}
-                        onChange={(team) => void handleAssign(team)}
+                        onChange={setSquadTeam}
                       />
                     </View>
                   ) : null}
@@ -550,11 +545,9 @@ export function StarterSlotSheet({
                   <Pressable
                     style={[styles.primaryBtn, busy && styles.disabled]}
                     disabled={busy}
-                    onPress={() => void handleSave()}
+                    onPress={handleSave}
                   >
-                    <Text style={styles.primaryText}>
-                      {saving ? 'Saving…' : 'Save'}
-                    </Text>
+                    <Text style={styles.primaryText}>Save</Text>
                   </Pressable>
                 </View>
               </>

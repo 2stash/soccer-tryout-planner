@@ -8,7 +8,11 @@
     "scheme": "soccertryoutplanner",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dwestlund.soccertryoutplanner",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -36,6 +40,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5d7a0619-5ea7-451e-a04c-21e4a2e7e816"
+      }
+    },
+    "owner": "dwestlund"
   }
 }

@@ -40,8 +40,8 @@ export function PlayerEditSheet({
   const [lastName, setLastName] = useState('');
   const [schoolYear, setSchoolYear] = useState('');
   const [positions, setPositions] = useState<number[]>([]);
+  const [squadTeam, setSquadTeam] = useState<PlayerAssignment | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
@@ -50,47 +50,41 @@ export function PlayerEditSheet({
     setLastName(player.last_name ?? '');
     setSchoolYear(normalizeSchoolYear(player.school_year));
     setPositions(normalizePositions(player.positions));
+    setSquadTeam(player.squad_team);
     setError(null);
   }, [player]);
 
   if (!player) return null;
   const current = player;
 
-  async function handleSave() {
+  function handleSave() {
     setError(null);
     if (!firstName.trim() || !lastName.trim()) {
       setError('First and last name are required.');
       return;
     }
-    setSaving(true);
-    try {
-      await onSave(current.id, {
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        school_year: schoolYear.trim(),
-        positions,
-        position_rank: current.position_rank,
-        team_rank: current.team_rank,
-      });
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleAssign(team: PlayerAssignment | null) {
-    if (!onAssignSquad) return;
-    setError(null);
-    setSaving(true);
-    try {
-      await onAssignSquad(current.id, team);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update team');
-    } finally {
-      setSaving(false);
-    }
+    const input = {
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      school_year: schoolYear.trim(),
+      positions,
+      position_rank: current.position_rank,
+      team_rank: current.team_rank,
+    };
+    const teamChanged =
+      Boolean(onAssignSquad) && squadTeam !== current.squad_team;
+    // Close first; persistence applies optimistically in the data layer.
+    onClose();
+    void (async () => {
+      try {
+        await onSave(current.id, input);
+        if (teamChanged && onAssignSquad) {
+          await onAssignSquad(current.id, squadTeam);
+        }
+      } catch (e) {
+        console.warn(e instanceof Error ? e.message : 'Save failed');
+      }
+    })();
   }
 
   async function handleDelete() {
@@ -106,7 +100,7 @@ export function PlayerEditSheet({
     }
   }
 
-  const busy = saving || deleting;
+  const busy = deleting;
 
   return (
     <Modal
@@ -181,9 +175,9 @@ export function PlayerEditSheet({
               <View style={styles.field}>
                 <Text style={styles.label}>Team</Text>
                 <SquadSelect
-                  value={current.squad_team}
+                  value={squadTeam}
                   disabled={busy}
-                  onChange={(team) => void handleAssign(team)}
+                  onChange={setSquadTeam}
                 />
               </View>
             ) : null}
@@ -202,11 +196,9 @@ export function PlayerEditSheet({
             <Pressable
               style={[styles.primaryBtn, busy && styles.disabled]}
               disabled={busy}
-              onPress={() => void handleSave()}
+              onPress={handleSave}
             >
-              <Text style={styles.primaryText}>
-                {saving ? 'Saving…' : 'Save'}
-              </Text>
+              <Text style={styles.primaryText}>Save</Text>
             </Pressable>
           </View>
         </View>
