@@ -169,7 +169,7 @@ export default function SquadPlannerPitchScreen() {
             No pitch position ({noPosition.length})
           </Text>
           <Text style={styles.benchHint}>
-            Set positions on All Players and they appear in the lists above.
+            Set positions on Assign Positions and they appear in the lists above.
           </Text>
           {noPosition.length === 0 ? (
             <Text style={styles.emptyText}>
@@ -204,7 +204,7 @@ export default function SquadPlannerPitchScreen() {
         <Text style={styles.sub}>
           {isPhone
             ? 'Same depth order as Depth Chart. Tap − to remove a position.'
-            : 'Same depth order as Depth Chart / All Players. Multi-position players appear in every matching slot.'}
+            : 'Same depth order as Depth Chart / Assign Positions. Multi-position players appear in every matching slot.'}
         </Text>
 
         <View style={styles.teamTabs}>
@@ -271,7 +271,7 @@ export default function SquadPlannerPitchScreen() {
                 No pitch position ({depthReady ? noPosition.length : 0})
               </Text>
               <Text style={styles.benchHint}>
-                On {teamLabel}, but no position set yet on All Players. Set one
+                On {teamLabel}, but no position set yet on Assign Positions. Set one
                 or more positions and they will appear on the field
                 automatically.
               </Text>

@@ -7,7 +7,8 @@ import {
   View,
 } from 'react-native';
 import type { Player, PlayerAssignment, PlayerInput, SquadTeam } from '@/lib/types';
-import { normalizeSchoolYear } from '@/lib/schoolYear';
+import { comparePlayersByName } from '@/lib/playerSort';
+import { normalizeSchoolYear, schoolYearSortKey } from '@/lib/schoolYear';
 import {
   formatPositionsShort,
   normalizePositions,
@@ -21,13 +22,15 @@ import { colors } from '@/constants/theme';
 
 const SQUAD_COL_FLEX = 1;
 
-type SortKey =
+export type PlayerTableSortKey =
   | 'last_name'
   | 'first_name'
   | 'school_year'
   | 'positions'
   | 'position_rank'
   | 'team_rank';
+
+type SortKey = PlayerTableSortKey;
 
 type Props = {
   players: Player[];
@@ -140,6 +143,25 @@ function sortPlayers(
       const av = formatPositionsShort(a.positions);
       const bv = formatPositionsShort(b.positions);
       const cmp = av.localeCompare(bv, undefined, { sensitivity: 'base' });
+      if (cmp !== 0) return sortAsc ? cmp : -cmp;
+      return comparePlayersByName(a, b);
+    }
+    if (sortKey === 'school_year') {
+      const cmp = schoolYearSortKey(a.school_year) - schoolYearSortKey(b.school_year);
+      if (cmp !== 0) return sortAsc ? cmp : -cmp;
+      return comparePlayersByName(a, b);
+    }
+    if (sortKey === 'first_name') {
+      const cmp = (a.first_name ?? '').localeCompare(b.first_name ?? '', undefined, {
+        sensitivity: 'base',
+      });
+      if (cmp !== 0) return sortAsc ? cmp : -cmp;
+      return (a.last_name ?? '').localeCompare(b.last_name ?? '', undefined, {
+        sensitivity: 'base',
+      });
+    }
+    if (sortKey === 'last_name') {
+      const cmp = comparePlayersByName(a, b);
       return sortAsc ? cmp : -cmp;
     }
     const av = a[sortKey as keyof Player];

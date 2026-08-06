@@ -350,7 +350,7 @@ export default function RosterPlayersScreen() {
       >
         <View style={styles.content}>
           <Text style={styles.pageTitle}>
-            {roster ? `${roster.name} · All Players` : 'All Players'}
+            {roster ? `${roster.name} · Assign Positions` : 'Assign Positions'}
           </Text>
           <Text style={styles.pageSub}>{pageSub}</Text>
 

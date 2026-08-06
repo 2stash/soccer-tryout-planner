@@ -7,6 +7,14 @@ import { createPlayer } from '@/lib/players';
 import { PlayerForm } from '@/components/PlayerForm';
 import { colors } from '@/constants/theme';
 
+function leaveAddScreen(rosterId: string | undefined) {
+  if (router.canGoBack()) {
+    router.back();
+    return;
+  }
+  if (rosterId) router.replace(`/roster/${rosterId}`);
+}
+
 export default function AddPlayerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { session, loading, configured } = useAuth();
@@ -27,9 +35,7 @@ export default function AddPlayerScreen() {
       ) : null}
       <PlayerForm
         submitLabel="Add player"
-        onCancel={() => {
-          if (id) router.replace(`/roster/${id}`);
-        }}
+        onCancel={() => leaveAddScreen(id)}
         onSubmit={async (value) => {
           if (!id) return;
           if (!isOnline) {
@@ -37,7 +43,7 @@ export default function AddPlayerScreen() {
             return;
           }
           await createPlayer(id, value);
-          router.replace(`/roster/${id}`);
+          leaveAddScreen(id);
         }}
       />
     </View>

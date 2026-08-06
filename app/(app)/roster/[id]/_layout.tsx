@@ -66,6 +66,7 @@ export default function RosterLayout() {
                 <Stack.Screen name="depth" />
                 <Stack.Screen name="rosters" />
                 <Stack.Screen name="assign" />
+                <Stack.Screen name="players" />
                 <Stack.Screen name="planner" />
                 <Stack.Screen name="add" />
                 <Stack.Screen name="import" />

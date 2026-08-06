@@ -4,11 +4,18 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
-import { Redirect } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
 import { confirmAction } from '@/lib/confirm';
+import {
+  downloadFullPlayersCsv,
+  downloadNamesYearCsv,
+} from '@/lib/exportPlayers';
+import { alertRequiresOnline } from '@/lib/offline/gate';
+import { useOffline } from '@/lib/offline/OfflineContext';
 import { useRosterData } from '@/lib/RosterDataContext';
 import { useLayout } from '@/lib/layout';
 import type { Player, PlayerAssignment, SquadTeam } from '@/lib/types';
@@ -48,6 +55,28 @@ const GRADE_FILTERS: { key: GradeFilter; label: string }[] = [
   ...CLASS_ORDER_DESC.map((y) => ({ key: y as GradeFilter, label: y })),
 ];
 
+function matchesFilter(player: Player, q: string) {
+  if (!q) return true;
+  const posLabel = formatPositionsShort(player.positions).toLowerCase();
+  const squadLabel =
+    player.squad_team === 'varsity'
+      ? 'varsity'
+      : player.squad_team === 'jv'
+        ? 'jv'
+        : player.squad_team === 'fr_soph'
+          ? 'fr/soph fr soph'
+          : player.squad_team === 'unavailable'
+            ? 'unavailable'
+            : 'available unassigned';
+  return (
+    (player.first_name ?? '').toLowerCase().includes(q) ||
+    (player.last_name ?? '').toLowerCase().includes(q) ||
+    posLabel.includes(q) ||
+    (player.school_year ?? '').toLowerCase().includes(q) ||
+    squadLabel.includes(q)
+  );
+}
+
 function playerMeta(p: Player, opts?: { omitYear?: boolean }) {
   const parts: string[] = [];
   if (!opts?.omitYear && p.school_year) parts.push(p.school_year);
@@ -71,7 +100,9 @@ const THREE_TEAM_COLS_MIN = 900;
 export default function AssignSquadsScreen() {
   const { session, loading: authLoading, configured } = useAuth();
   const { width, isPhone, isCompact } = useLayout();
+  const { isOnline } = useOffline();
   const {
+    rosterId,
     roster,
     players,
     loading,
@@ -90,8 +121,11 @@ export default function AssignSquadsScreen() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [phoneTab, setPhoneTab] = useState<PhoneTabKey>('available');
   const [gradeFilter, setGradeFilter] = useState<GradeFilter>('all');
+  const [filter, setFilter] = useState('');
+  const [moreOpen, setMoreOpen] = useState(false);
   const threeTeamCols = !isPhone && width >= THREE_TEAM_COLS_MIN;
   const tightTeamRows = threeTeamCols;
+  const filterQ = filter.trim().toLowerCase();
 
   const poolTabs = useMemo(
     (): { key: PhoneTabKey; label: string }[] => [
@@ -121,13 +155,19 @@ export default function AssignSquadsScreen() {
   );
 
   const availableVisible = useMemo(
-    () => filterAvailableByGrade(availablePlayers, gradeFilter),
-    [availablePlayers, gradeFilter]
+    () =>
+      filterAvailableByGrade(availablePlayers, gradeFilter).filter((p) =>
+        matchesFilter(p, filterQ)
+      ),
+    [availablePlayers, gradeFilter, filterQ]
   );
 
   const unavailableVisible = useMemo(
-    () => filterAvailableByGrade(unavailablePlayers, gradeFilter),
-    [unavailablePlayers, gradeFilter]
+    () =>
+      filterAvailableByGrade(unavailablePlayers, gradeFilter).filter((p) =>
+        matchesFilter(p, filterQ)
+      ),
+    [unavailablePlayers, gradeFilter, filterQ]
   );
 
   const availableClassCounts = useMemo(
@@ -154,6 +194,19 @@ export default function AssignSquadsScreen() {
     }
     return map;
   }, [players]);
+
+  const byTeamVisible = useMemo(() => {
+    if (!filterQ) return byTeam;
+    const map: Record<SquadTeam, Player[]> = {
+      varsity: [],
+      jv: [],
+      fr_soph: [],
+    };
+    for (const key of Object.keys(map) as SquadTeam[]) {
+      map[key] = byTeam[key].filter((p) => matchesFilter(p, filterQ));
+    }
+    return map;
+  }, [byTeam, filterQ]);
 
   const rankedCount =
     availablePlayers.length + unavailablePlayers.length;
@@ -289,7 +342,7 @@ export default function AssignSquadsScreen() {
 
   function poolPlayers(key: PoolKey): Player[] {
     if (isRankPoolKey(key)) return rankedVisible(key);
-    return byTeam[key];
+    return byTeamVisible[key];
   }
 
   useEffect(() => {
@@ -658,7 +711,9 @@ export default function AssignSquadsScreen() {
           <Text style={styles.empty}>
             {all.length === 0
               ? emptyAll
-              : `No ${gradeFilter === 'all' ? '' : gradeFilter + ' '}players in ${label}.`}
+              : filterQ
+                ? `No players match “${filter.trim()}”.`
+                : `No ${gradeFilter === 'all' ? '' : gradeFilter + ' '}players in ${label}.`}
           </Text>
         ) : (
           <View style={styles.list}>
@@ -674,8 +729,9 @@ export default function AssignSquadsScreen() {
   function renderTeamPanel(teamId: SquadTeam) {
     const label =
       SQUAD_TEAMS.find((t) => t.id === teamId)?.label ?? teamId;
-    const list = byTeam[teamId];
-    const counts = classCountsLine(list);
+    const all = byTeam[teamId];
+    const list = byTeamVisible[teamId];
+    const counts = classCountsLine(all);
     return (
       <View
         key={teamId}
@@ -697,7 +753,13 @@ export default function AssignSquadsScreen() {
           <Text style={styles.count}>{list.length}</Text>
         </View>
         {list.length === 0 ? (
-          <Text style={styles.empty}>No players yet</Text>
+          <Text style={styles.empty}>
+            {all.length === 0
+              ? 'No players yet'
+              : filterQ
+                ? `No players match “${filter.trim()}”.`
+                : 'No players yet'}
+          </Text>
         ) : (
           <View style={styles.list}>
             {list.map((player, index) =>
@@ -731,8 +793,121 @@ export default function AssignSquadsScreen() {
           <Text style={styles.sub}>
             {isPhone
               ? '★ locks at top. ⇈/⇊ jump within band. ↑↓ nudge. Move between Available, Unavailable, and squads.'
-              : 'Rank Available and Unavailable (#1 top). Filter by grade; Sort resets unstarred order.'}
+              : 'Rank Available and Unavailable (#1 top). Filter by name or grade; Sort resets unstarred order.'}
           </Text>
+
+          <View style={styles.toolbar}>
+            <TextInput
+              style={[styles.search, isCompact && styles.searchCompact]}
+              value={filter}
+              onChangeText={setFilter}
+              placeholder="Filter players…"
+              placeholderTextColor={colors.muted}
+            />
+            <Pressable
+              style={[styles.toolbarPrimaryBtn, !isOnline && styles.btnDisabled]}
+              onPress={() => {
+                if (!isOnline) {
+                  alertRequiresOnline('Adding players');
+                  return;
+                }
+                router.push(`/roster/${rosterId}/add`);
+              }}
+            >
+              <Text style={styles.toolbarPrimaryText}>Add</Text>
+            </Pressable>
+            {isCompact ? (
+              <Pressable
+                style={styles.secondaryBtn}
+                onPress={() => setMoreOpen((v) => !v)}
+              >
+                <Text style={styles.secondaryText}>More</Text>
+              </Pressable>
+            ) : (
+              <>
+                <Pressable
+                  style={[styles.secondaryBtn, !isOnline && styles.btnDisabled]}
+                  onPress={() => {
+                    if (!isOnline) {
+                      alertRequiresOnline('Import');
+                      return;
+                    }
+                    router.push(`/roster/${rosterId}/import`);
+                  }}
+                >
+                  <Text style={styles.secondaryText}>Import</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.secondaryBtn,
+                    players.length === 0 && styles.btnDisabled,
+                  ]}
+                  disabled={players.length === 0}
+                  onPress={() =>
+                    downloadFullPlayersCsv(players, roster?.name ?? 'roster')
+                  }
+                >
+                  <Text style={styles.secondaryText}>Export full</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.secondaryBtn,
+                    players.length === 0 && styles.btnDisabled,
+                  ]}
+                  disabled={players.length === 0}
+                  onPress={() =>
+                    downloadNamesYearCsv(players, roster?.name ?? 'roster')
+                  }
+                >
+                  <Text style={styles.secondaryText}>Export names</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+
+          {isCompact && moreOpen ? (
+            <View style={styles.morePanel}>
+              <Pressable
+                style={[styles.moreRow, !isOnline && styles.btnDisabled]}
+                onPress={() => {
+                  if (!isOnline) {
+                    alertRequiresOnline('Import');
+                    return;
+                  }
+                  setMoreOpen(false);
+                  router.push(`/roster/${rosterId}/import`);
+                }}
+              >
+                <Text style={styles.moreText}>Import spreadsheet</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.moreRow,
+                  players.length === 0 && styles.btnDisabled,
+                ]}
+                disabled={players.length === 0}
+                onPress={() => {
+                  downloadFullPlayersCsv(players, roster?.name ?? 'roster');
+                  setMoreOpen(false);
+                }}
+              >
+                <Text style={styles.moreText}>Export full CSV</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.moreRow,
+                  players.length === 0 && styles.btnDisabled,
+                ]}
+                disabled={players.length === 0}
+                onPress={() => {
+                  downloadNamesYearCsv(players, roster?.name ?? 'roster');
+                  setMoreOpen(false);
+                }}
+              >
+                <Text style={styles.moreText}>Export names CSV</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           {displayError ? (
             <Pressable onPress={dismissError} style={styles.errorBanner}>
@@ -747,8 +922,8 @@ export default function AssignSquadsScreen() {
                 {poolTabs.map((tab) => {
                   const active = phoneTab === tab.key;
                   const count = isRankPoolKey(tab.key)
-                    ? rankedList(tab.key).length
-                    : byTeam[tab.key as SquadTeam].length;
+                    ? rankedVisible(tab.key).length
+                    : byTeamVisible[tab.key as SquadTeam].length;
                   return (
                     <Pressable
                       key={tab.key}
@@ -799,7 +974,11 @@ export default function AssignSquadsScreen() {
                   </View>
                   {phoneList.length === 0 ? (
                     <Text style={styles.empty}>
-                      {loading ? 'Loading…' : 'No players yet'}
+                      {loading
+                        ? 'Loading…'
+                        : filterQ
+                          ? `No players match “${filter.trim()}”.`
+                          : 'No players yet'}
                     </Text>
                   ) : (
                     <View style={styles.list}>
@@ -866,6 +1045,73 @@ const styles = StyleSheet.create({
     marginTop: -8,
     fontSize: 14,
     fontWeight: '600',
+  },
+  toolbar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    alignItems: 'center',
+  },
+  search: {
+    flexGrow: 1,
+    flexBasis: 180,
+    minWidth: 140,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: layout.radius,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: colors.surface,
+    color: colors.text,
+    fontSize: 15,
+  },
+  searchCompact: {
+    flexBasis: 120,
+  },
+  toolbarPrimaryBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: layout.radius,
+  },
+  toolbarPrimaryText: {
+    color: colors.primaryText,
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  secondaryBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: layout.radius,
+  },
+  secondaryText: {
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  btnDisabled: {
+    opacity: 0.45,
+  },
+  morePanel: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: layout.radius,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+  },
+  moreRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  moreText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
   },
   errorBanner: {
     flexDirection: 'row',

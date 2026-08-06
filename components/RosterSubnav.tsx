@@ -13,12 +13,33 @@ type Props = {
   rosterId: string;
 };
 
+/** Main roster tabs — add/import are overlays and keep the prior tab highlighted. */
+type MainTab =
+  | 'positions'
+  | 'depth'
+  | 'assign'
+  | 'players'
+  | 'print'
+  | 'team';
+
 function userLabel(email: string | undefined) {
   if (!email) return 'Signed in';
   const at = email.indexOf('@');
   if (at > 0 && at <= 18) return email.slice(0, at);
   if (email.length <= 22) return email;
   return `${email.slice(0, 20)}…`;
+}
+
+function mainTabFromPath(pathname: string): MainTab | null {
+  if (pathname.includes('/add') || pathname.includes('/import')) return null;
+  if (pathname.includes('/assign')) return 'assign';
+  if (pathname.includes('/players')) return 'players';
+  if (pathname.includes('/depth')) return 'depth';
+  if (pathname.includes('/rosters') || pathname.includes('/planner')) {
+    return 'print';
+  }
+  if (pathname.includes('/team')) return 'team';
+  return 'positions';
 }
 
 export function RosterSubnav({ rosterId }: Props) {
@@ -36,27 +57,41 @@ export function RosterSubnav({ rosterId }: Props) {
     retrySync,
   } = useOffline();
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
-  const onAssign = pathname.includes('/assign');
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<MainTab>(
+    () => mainTabFromPath(pathname) ?? 'positions'
+  );
+  const onAssign = activeTab === 'assign';
+  const onAllPlayers = activeTab === 'players';
   const onPlanner = pathname.includes('/planner');
-  const onDepth = pathname.includes('/depth');
+  const onDepth = activeTab === 'depth';
   const onRosters = pathname.includes('/rosters');
-  const onTeam = pathname.includes('/team');
-  const onPrintView = onRosters || onPlanner;
-  const onPlayers =
-    !onAssign && !onPlanner && !onDepth && !onRosters && !onTeam;
+  const onTeam = activeTab === 'team';
+  const onPrintView = activeTab === 'print';
+  const onPositions = activeTab === 'positions';
 
   useEffect(() => {
     setPrintMenuOpen(false);
+    setAccountMenuOpen(false);
+    const tab = mainTabFromPath(pathname);
+    if (tab) setActiveTab(tab);
   }, [pathname]);
 
   async function handleSignOut() {
+    setAccountMenuOpen(false);
     await signOut();
     router.replace('/(auth)/sign-in');
   }
 
   function goPrint(path: 'rosters' | 'planner') {
     setPrintMenuOpen(false);
+    setAccountMenuOpen(false);
     router.replace(`/roster/${rosterId}/${path}`);
+  }
+
+  function goTeamInvites() {
+    setAccountMenuOpen(false);
+    router.replace(`/roster/${rosterId}/team`);
   }
 
   return (
@@ -81,30 +116,17 @@ export function RosterSubnav({ rosterId }: Props) {
             >
               <Text style={styles.dashboardText}>Dashboard</Text>
             </Pressable>
-            {isAdmin ? (
-              <Pressable
-                style={[styles.teamLink, onTeam && styles.teamLinkActive]}
-                onPress={() => router.replace(`/roster/${rosterId}/team`)}
-              >
-                <Text
-                  style={[
-                    styles.teamLinkText,
-                    onTeam && styles.teamLinkTextActive,
-                  ]}
-                >
-                  Team / Invites
-                </Text>
-              </Pressable>
-            ) : null}
           </View>
 
           <View style={styles.tabs}>
             <Pressable
-              style={[styles.tab, onPlayers && styles.tabActive]}
+              style={[styles.tab, onPositions && styles.tabActive]}
               onPress={() => router.replace(`/roster/${rosterId}`)}
             >
-              <Text style={[styles.tabText, onPlayers && styles.tabTextActive]}>
-                All Players
+              <Text
+                style={[styles.tabText, onPositions && styles.tabTextActive]}
+              >
+                Assign Positions
               </Text>
             </Pressable>
             <Pressable
@@ -123,10 +145,23 @@ export function RosterSubnav({ rosterId }: Props) {
                 Assign Squads
               </Text>
             </Pressable>
+            <Pressable
+              style={[styles.tab, onAllPlayers && styles.tabActive]}
+              onPress={() => router.replace(`/roster/${rosterId}/players`)}
+            >
+              <Text
+                style={[styles.tabText, onAllPlayers && styles.tabTextActive]}
+              >
+                All Players
+              </Text>
+            </Pressable>
             <View style={styles.printWrap}>
               <Pressable
                 style={[styles.tab, onPrintView && styles.tabActive]}
-                onPress={() => setPrintMenuOpen((open) => !open)}
+                onPress={() => {
+                  setAccountMenuOpen(false);
+                  setPrintMenuOpen((open) => !open);
+                }}
               >
                 <Text
                   style={[
@@ -178,15 +213,52 @@ export function RosterSubnav({ rosterId }: Props) {
 
           <View style={[styles.side, styles.userSide]}>
             <RoleSwitcher />
-            <Text style={styles.userEmail} numberOfLines={1}>
-              {userLabel(user?.email)}
-            </Text>
-            <Pressable
-              style={styles.signOut}
-              onPress={() => void handleSignOut()}
-            >
-              <Text style={styles.signOutText}>Sign out</Text>
-            </Pressable>
+            <View style={styles.accountWrap}>
+              <Pressable
+                style={[
+                  styles.accountBtn,
+                  (accountMenuOpen || onTeam) && styles.accountBtnOpen,
+                ]}
+                onPress={() => {
+                  setPrintMenuOpen(false);
+                  setAccountMenuOpen((open) => !open);
+                }}
+              >
+                <Text style={styles.accountBtnLabel}>Account</Text>
+                <Text style={styles.accountBtnUser} numberOfLines={1}>
+                  {userLabel(user?.email)}
+                  {accountMenuOpen ? ' ▲' : ' ▼'}
+                </Text>
+              </Pressable>
+              {accountMenuOpen ? (
+                <View style={styles.accountMenu}>
+                  {isAdmin ? (
+                    <Pressable
+                      style={[
+                        styles.accountItem,
+                        onTeam && styles.accountItemActive,
+                      ]}
+                      onPress={goTeamInvites}
+                    >
+                      <Text
+                        style={[
+                          styles.accountItemText,
+                          onTeam && styles.accountItemTextActive,
+                        ]}
+                      >
+                        Team / Invites
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    style={styles.accountItem}
+                    onPress={() => void handleSignOut()}
+                  >
+                    <Text style={styles.accountItemText}>Sign out</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
           </View>
         </View>
       </View>
@@ -302,25 +374,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: 15,
   },
-  teamLink: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    backgroundColor: colors.surface,
-  },
-  teamLinkActive: {
-    backgroundColor: colors.primary,
-  },
-  teamLinkText: {
-    color: colors.primary,
-    fontWeight: '800',
-    fontSize: 13,
-  },
-  teamLinkTextActive: {
-    color: colors.primaryText,
-  },
   tabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -384,19 +437,68 @@ const styles = StyleSheet.create({
   printItemTextActive: {
     color: colors.primary,
   },
-  userEmail: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    maxWidth: 140,
+  accountWrap: {
+    position: 'relative',
+    zIndex: 40,
   },
-  signOut: {
+  accountBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: 8,
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    paddingHorizontal: 4,
+    minWidth: 120,
+    maxWidth: 180,
+    gap: 1,
   },
-  signOutText: {
-    color: colors.primary,
-    fontWeight: '700',
+  accountBtnOpen: {
+    borderColor: colors.primary,
+  },
+  accountBtnLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  accountBtnUser: {
     fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  accountMenu: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    marginTop: 4,
+    minWidth: 180,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+    shadowColor: '#15202b',
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+  },
+  accountItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  accountItemActive: {
+    backgroundColor: '#e8f5ef',
+  },
+  accountItemText: {
+    fontWeight: '700',
+    color: colors.text,
+    fontSize: 14,
+  },
+  accountItemTextActive: {
+    color: colors.primary,
   },
 });

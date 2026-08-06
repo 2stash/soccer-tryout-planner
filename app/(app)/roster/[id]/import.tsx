@@ -33,6 +33,10 @@ export default function ImportPlayersScreen() {
         <ImportSheet
           rosterId={id}
           onImported={() => {
+            if (router.canGoBack()) {
+              router.back();
+              return;
+            }
             router.replace(`/roster/${id}`);
           }}
         />
