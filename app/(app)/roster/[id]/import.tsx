@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
 import { ImportSheet } from '@/components/ImportSheet';
@@ -20,9 +20,12 @@ export default function ImportPlayersScreen() {
 
   return (
     <View style={styles.screen}>
-      <Text style={styles.heading}>Import spreadsheet</Text>
+      <Text style={styles.heading}>Import players</Text>
       <Text style={styles.sub}>
         Preview mapped columns, then confirm to insert players into this team.
+        {Platform.OS === 'ios'
+          ? ' On iPhone, use Scan photo for a printed Last, First + class list.'
+          : ''}
       </Text>
       {!isOnline ? (
         <Text style={styles.offlineNote}>

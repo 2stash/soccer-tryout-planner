@@ -36,6 +36,14 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Soccer Tryout Planner to access photos so you can import players from a roster picture.",
+          "cameraPermission": "Allow Soccer Tryout Planner to use the camera so you can photograph a roster list to import players.",
+          "microphonePermission": false
+        }
       ]
     ],
     "experiments": {

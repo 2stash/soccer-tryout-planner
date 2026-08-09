@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import {
+  ActionSheetIOS,
+  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -8,10 +10,16 @@ import {
   View,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import {
+  extractTextFromImage,
+  isSupported as isOcrSupported,
+} from 'expo-text-extractor';
 import {
   parseSpreadsheetBuffer,
   type ImportParseResult,
 } from '@/lib/importSpreadsheet';
+import { parseRosterPhotoText } from '@/lib/parseRosterPhoto';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { bulkInsertPlayers } from '@/lib/players';
 import { formatPositionsShort } from '@/lib/positions';
@@ -22,11 +30,15 @@ type Props = {
   onImported: (count: number) => void;
 };
 
+// Show on iOS device builds; OCR module may report support only after native link.
+const canScanPhoto = Platform.OS === 'ios';
+
 export function ImportSheet({ rosterId, onImported }: Props) {
   const { activeWorkspaceId } = useActiveRole();
   const [result, setResult] = useState<ImportParseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   async function pickFile() {
     try {
@@ -51,6 +63,85 @@ export function ImportSheet({ rosterId, onImported }: Props) {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to read file');
     }
+  }
+
+  async function processPhotoUri(uri: string) {
+    if (!isOcrSupported) {
+      setError(
+        'Photo scan needs a native iOS build (TestFlight). It is not available in Expo Go.'
+      );
+      return;
+    }
+    setScanning(true);
+    setError(null);
+    try {
+      const texts = await extractTextFromImage(uri);
+      const parsed = parseRosterPhotoText(texts);
+      setResult(parsed);
+      if (parsed.rows.length === 0) {
+        setError(
+          parsed.errors[0]?.message ??
+            'No players found in this photo. Try a clearer shot of the name and class columns.'
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to read photo');
+      setResult(null);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function takePhoto() {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      setError('Camera permission is required to photograph a roster list.');
+      return;
+    }
+    const picked = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 1,
+      allowsEditing: false,
+    });
+    if (picked.canceled || !picked.assets?.[0]?.uri) return;
+    await processPhotoUri(picked.assets[0].uri);
+  }
+
+  async function choosePhoto() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setError('Photo library permission is required to import from a picture.');
+      return;
+    }
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 1,
+      allowsEditing: false,
+    });
+    if (picked.canceled || !picked.assets?.[0]?.uri) return;
+    await processPhotoUri(picked.assets[0].uri);
+  }
+
+  function openScanMenu() {
+    if (scanning) return;
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Cancel', 'Take photo', 'Choose from library'],
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) void takePhoto();
+          if (buttonIndex === 2) void choosePhoto();
+        }
+      );
+      return;
+    }
+    Alert.alert('Scan photo', 'Import players from a roster picture.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Take photo', onPress: () => void takePhoto() },
+      { text: 'Choose from library', onPress: () => void choosePhoto() },
+    ]);
   }
 
   async function confirmImport() {
@@ -83,15 +174,41 @@ export function ImportSheet({ rosterId, onImported }: Props) {
         <Text style={styles.mono}>first_name</Text>,{' '}
         <Text style={styles.mono}>last_name</Text>. Optional:{' '}
         <Text style={styles.mono}>school_year</Text>,{' '}
-        <Text style={styles.mono}>positions</Text> (e.g. <Text style={styles.mono}>9,10</Text> or{' '}
-        <Text style={styles.mono}>ST,CAM</Text>),{' '}
-        <Text style={styles.mono}>position_rank</Text>. Available order is set
+        <Text style={styles.mono}>positions</Text> (e.g.{' '}
+        <Text style={styles.mono}>9,10</Text> or <Text style={styles.mono}>ST,CAM</Text>
+        ), <Text style={styles.mono}>position_rank</Text>. Available order is set
         by class (Sr→Fr) then name after import.
       </Text>
 
-      <Pressable style={styles.primaryBtn} onPress={pickFile}>
-        <Text style={styles.primaryText}>Choose spreadsheet</Text>
-      </Pressable>
+      {canScanPhoto ? (
+        <Text style={styles.help}>
+          On iPhone you can also photograph a printed list with{' '}
+          <Text style={styles.mono}>Last, First</Text> and class (
+          <Text style={styles.mono}>FR/SO/JR/SR</Text>) columns, then confirm the
+          preview before importing.
+        </Text>
+      ) : null}
+
+      <View style={styles.actions}>
+        <Pressable
+          style={[styles.primaryBtn, scanning && styles.disabled]}
+          disabled={scanning}
+          onPress={pickFile}
+        >
+          <Text style={styles.primaryText}>Choose spreadsheet</Text>
+        </Pressable>
+        {canScanPhoto ? (
+          <Pressable
+            style={[styles.secondaryBtn, scanning && styles.disabled]}
+            disabled={scanning}
+            onPress={openScanMenu}
+          >
+            <Text style={styles.secondaryText}>
+              {scanning ? 'Reading photo…' : 'Scan photo'}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -109,7 +226,8 @@ export function ImportSheet({ rosterId, onImported }: Props) {
             <View style={styles.errorBox}>
               {result.errors.slice(0, 8).map((err) => (
                 <Text key={`${err.row}-${err.message}`} style={styles.errorItem}>
-                  Row {err.row}: {err.message}
+                  {err.row > 0 ? `Row ${err.row}: ` : ''}
+                  {err.message}
                 </Text>
               ))}
               {result.errors.length > 8 ? (
@@ -130,8 +248,11 @@ export function ImportSheet({ rosterId, onImported }: Props) {
                     </Text>
                   ))}
                 </View>
-                {result.rows.slice(0, 12).map((row, idx) => (
-                  <View key={`${row.first_name}-${row.last_name}-${idx}`} style={styles.row}>
+                {result.rows.slice(0, 40).map((row, idx) => (
+                  <View
+                    key={`${row.first_name}-${row.last_name}-${idx}`}
+                    style={styles.row}
+                  >
                     <Text style={styles.cell}>{row.first_name}</Text>
                     <Text style={styles.cell}>{row.last_name}</Text>
                     <Text style={styles.cell}>{row.school_year || '—'}</Text>
@@ -142,6 +263,11 @@ export function ImportSheet({ rosterId, onImported }: Props) {
                     <Text style={styles.cell}>{row.team_rank ?? '—'}</Text>
                   </View>
                 ))}
+                {result.rows.length > 40 ? (
+                  <Text style={styles.meta}>
+                    …and {result.rows.length - 40} more in this import
+                  </Text>
+                ) : null}
               </View>
             </ScrollView>
           ) : null}
@@ -180,6 +306,12 @@ const styles = StyleSheet.create({
     fontFamily: Platform.select({ web: 'monospace', default: undefined }),
     color: colors.text,
   },
+  actions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    alignItems: 'center',
+  },
   primaryBtn: {
     alignSelf: 'flex-start',
     backgroundColor: colors.primary,
@@ -190,6 +322,19 @@ const styles = StyleSheet.create({
   primaryText: {
     color: colors.primaryText,
     fontWeight: '600',
+  },
+  secondaryBtn: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  secondaryText: {
+    color: colors.text,
+    fontWeight: '700',
   },
   disabled: {
     opacity: 0.55,
