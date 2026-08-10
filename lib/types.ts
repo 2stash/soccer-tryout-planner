@@ -20,6 +20,8 @@ export type PlayerTryoutDay = {
   day: number;
   tryout_number: number | null;
   attended: boolean;
+  /** Elapsed ms from Time Trial Start when Finish was tapped; null if unset. */
+  time_trial_ms: number | null;
 };
 
 /** Membership roles on a tryout roster (one user may hold several). */

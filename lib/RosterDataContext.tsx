@@ -49,6 +49,7 @@ import {
 } from '@/lib/positions';
 import { getRoster } from '@/lib/rosters';
 import {
+  clearTryoutDayTimes as clearTryoutDayTimesApi,
   endTryout as endTryoutApi,
   setTryoutNumberWithPrepopulate,
   startTryout as startTryoutApi,
@@ -181,6 +182,26 @@ type RosterDataValue = {
     day: number,
     attended: boolean
   ) => Promise<void>;
+  /** Save Time Trial finish elapsed ms for a tryout day. */
+  setTryoutTimeTrial: (
+    playerId: string,
+    day: number,
+    timeTrialMs: number | null
+  ) => Promise<void>;
+  /** Clear all saved time-trial times for a day (optimistic + one server update). */
+  clearTryoutDayTimes: (day: number) => Promise<void>;
+  /**
+   * Local Time Trial stopwatch (survives tab changes within this roster).
+   * Not synced — only finish times are persisted.
+   */
+  timeTrialDay: number;
+  timeTrialStartedAt: number | null;
+  timeTrialStoppedAt: number | null;
+  setTimeTrialDay: (day: number) => void;
+  startTimeTrialClock: () => void;
+  endTimeTrialClock: () => void;
+  /** Reset local stopwatch to 0 (does not clear saved player times). */
+  clearTimeTrialClock: () => void;
 };
 
 const RosterDataContext = createContext<RosterDataValue | null>(null);
@@ -311,6 +332,13 @@ export function RosterDataProvider({
   const [loading, setLoading] = useState(() => !bootSnap);
   const [depthReady, setDepthReady] = useState(() => Boolean(bootSnap));
   const [error, setError] = useState<string | null>(null);
+  const [timeTrialDay, setTimeTrialDay] = useState(1);
+  const [timeTrialStartedAt, setTimeTrialStartedAt] = useState<number | null>(
+    null
+  );
+  const [timeTrialStoppedAt, setTimeTrialStoppedAt] = useState<number | null>(
+    null
+  );
 
   const membershipRef = useRef(
     bootSnap ? membershipKey(bootSnap.players) : ''
@@ -2000,18 +2028,17 @@ export function RosterDataProvider({
           dayCount,
         })
       ) {
+        const player = playersRef.current.find((p) => p.id === playerId);
+        const dayRow = player?.tryout_days?.find((d) => d.day === day);
         const localDays: PlayerTryoutDay[] = [
           {
             day,
             tryout_number: tryoutNumber,
-            attended:
-              playersRef.current
-                .find((p) => p.id === playerId)
-                ?.tryout_days?.find((d) => d.day === day)?.attended ?? false,
+            attended: dayRow?.attended ?? false,
+            time_trial_ms: dayRow?.time_trial_ms ?? null,
           },
         ];
         if (tryoutNumber != null) {
-          const player = playersRef.current.find((p) => p.id === playerId);
           for (let d = day + 1; d <= dayCount; d++) {
             const existing = player?.tryout_days?.find((x) => x.day === d);
             if (existing?.tryout_number != null) continue;
@@ -2019,6 +2046,7 @@ export function RosterDataProvider({
               day: d,
               tryout_number: tryoutNumber,
               attended: existing?.attended ?? false,
+              time_trial_ms: existing?.time_trial_ms ?? null,
             });
           }
         }
@@ -2066,6 +2094,7 @@ export function RosterDataProvider({
             day,
             tryout_number: existing?.tryout_number ?? null,
             attended,
+            time_trial_ms: existing?.time_trial_ms ?? null,
           },
         ]);
         void persistSnapshot();
@@ -2091,6 +2120,127 @@ export function RosterDataProvider({
     [queueIfNeeded, persistSnapshot]
   );
 
+  const setTryoutTimeTrial = useCallback(
+    async (playerId: string, day: number, timeTrialMs: number | null) => {
+      setError(null);
+      if (
+        await queueIfNeeded({
+          type: 'upsertTryoutDay',
+          playerId,
+          day,
+          timeTrialMs,
+        })
+      ) {
+        const existing = playersRef.current
+          .find((p) => p.id === playerId)
+          ?.tryout_days?.find((d) => d.day === day);
+        mergeTryoutDaysLocal(playerId, [
+          {
+            day,
+            tryout_number: existing?.tryout_number ?? null,
+            attended: existing?.attended ?? false,
+            time_trial_ms: timeTrialMs,
+          },
+        ]);
+        void persistSnapshot();
+        return;
+      }
+
+      try {
+        const written = await upsertTryoutDay({
+          playerId,
+          day,
+          patch: { time_trial_ms: timeTrialMs },
+        });
+        mergeTryoutDaysLocal(playerId, [written]);
+        muteRealtimeBriefly();
+        void persistSnapshot();
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : 'Failed to save time trial'
+        );
+        throw e;
+      }
+    },
+    [queueIfNeeded, persistSnapshot]
+  );
+
+  const clearTryoutDayTimes = useCallback(
+    async (day: number) => {
+      setError(null);
+      const affectedIds = playersRef.current
+        .filter((p) =>
+          (p.tryout_days ?? []).some(
+            (d) => d.day === day && d.time_trial_ms != null
+          )
+        )
+        .map((p) => p.id);
+
+      const applyLocalClear = () => {
+        const next = playersRef.current.map((p) => {
+          const days = p.tryout_days ?? [];
+          if (!days.some((d) => d.day === day && d.time_trial_ms != null)) {
+            return p;
+          }
+          return {
+            ...p,
+            tryout_days: days.map((d) =>
+              d.day === day ? { ...d, time_trial_ms: null } : d
+            ),
+          };
+        });
+        setPlayers(next);
+        playersRef.current = next;
+      };
+
+      // Paint clear immediately, then sync.
+      applyLocalClear();
+      void persistSnapshot();
+
+      if (affectedIds.length === 0) return;
+
+      if (
+        await queueIfNeeded({
+          type: 'clearTryoutDayTimes',
+          day,
+          playerIds: affectedIds,
+        })
+      ) {
+        return;
+      }
+
+      try {
+        await clearTryoutDayTimesApi({ playerIds: affectedIds, day });
+        muteRealtimeBriefly();
+        void persistSnapshot();
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : 'Failed to clear time trial times'
+        );
+        throw e;
+      }
+    },
+    [queueIfNeeded, persistSnapshot]
+  );
+
+  const startTimeTrialClock = useCallback(() => {
+    const t = Date.now();
+    setTimeTrialStartedAt(t);
+    setTimeTrialStoppedAt(null);
+  }, []);
+
+  const endTimeTrialClock = useCallback(() => {
+    setTimeTrialStoppedAt((prev) => {
+      if (prev != null) return prev;
+      return Date.now();
+    });
+  }, []);
+
+  const clearTimeTrialClock = useCallback(() => {
+    setTimeTrialStartedAt(null);
+    setTimeTrialStoppedAt(null);
+  }, []);
+
   const replayApiRef = useRef({
     assignSquad,
     savePlayer,
@@ -2107,6 +2257,8 @@ export function RosterDataProvider({
     applyAvailablePlan,
     setTryoutNumber,
     setTryoutAttended,
+    setTryoutTimeTrial,
+    clearTryoutDayTimes,
   });
   replayApiRef.current = {
     assignSquad,
@@ -2124,6 +2276,8 @@ export function RosterDataProvider({
     applyAvailablePlan,
     setTryoutNumber,
     setTryoutAttended,
+    setTryoutTimeTrial,
+    clearTryoutDayTimes,
   };
 
   const persistSnapshotRef = useRef(persistSnapshot);
@@ -2209,6 +2363,20 @@ export function RosterDataProvider({
             if ('attended' in op && op.attended !== undefined) {
               await api.setTryoutAttended(op.playerId, op.day, op.attended);
             }
+            if ('timeTrialMs' in op) {
+              await api.setTryoutTimeTrial(
+                op.playerId,
+                op.day,
+                op.timeTrialMs ?? null
+              );
+            }
+            break;
+          case 'clearTryoutDayTimes':
+            // Local times were already cleared when queued; push the saved ids.
+            await clearTryoutDayTimesApi({
+              playerIds: op.playerIds,
+              day: op.day,
+            });
             break;
           default:
             break;
@@ -2301,6 +2469,15 @@ export function RosterDataProvider({
       endTryout,
       setTryoutNumber,
       setTryoutAttended,
+      setTryoutTimeTrial,
+      clearTryoutDayTimes,
+      timeTrialDay,
+      timeTrialStartedAt,
+      timeTrialStoppedAt,
+      setTimeTrialDay,
+      startTimeTrialClock,
+      endTimeTrialClock,
+      clearTimeTrialClock,
     }),
     [
       rosterId,
@@ -2328,6 +2505,14 @@ export function RosterDataProvider({
       endTryout,
       setTryoutNumber,
       setTryoutAttended,
+      setTryoutTimeTrial,
+      clearTryoutDayTimes,
+      timeTrialDay,
+      timeTrialStartedAt,
+      timeTrialStoppedAt,
+      startTimeTrialClock,
+      endTimeTrialClock,
+      clearTimeTrialClock,
     ]
   );
 

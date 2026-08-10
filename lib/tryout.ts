@@ -11,6 +11,7 @@ export function playerAttendedAnyTryout(
 export type TryoutDayPatch = {
   tryout_number?: number | null;
   attended?: boolean;
+  time_trial_ms?: number | null;
 };
 
 function mapTryoutDay(row: Record<string, unknown>): PlayerTryoutDay {
@@ -19,6 +20,8 @@ function mapTryoutDay(row: Record<string, unknown>): PlayerTryoutDay {
     tryout_number:
       row.tryout_number == null ? null : Number(row.tryout_number),
     attended: Boolean(row.attended),
+    time_trial_ms:
+      row.time_trial_ms == null ? null : Number(row.time_trial_ms),
   };
 }
 
@@ -61,7 +64,7 @@ export async function listTryoutDaysForPlayers(
 
   const { data, error } = await supabase
     .from('player_tryout_days')
-    .select('player_id, day, tryout_number, attended')
+    .select('player_id, day, tryout_number, attended, time_trial_ms')
     .in('player_id', unique);
 
   if (error) throw error;
@@ -90,7 +93,7 @@ export async function upsertTryoutDay(params: {
 
   const { data: existing, error: readError } = await supabase
     .from('player_tryout_days')
-    .select('player_id, day, tryout_number, attended')
+    .select('player_id, day, tryout_number, attended, time_trial_ms')
     .eq('player_id', playerId)
     .eq('day', day)
     .maybeSingle();
@@ -109,15 +112,39 @@ export async function upsertTryoutDay(params: {
       'attended' in patch
         ? Boolean(patch.attended)
         : Boolean(existing?.attended),
+    time_trial_ms:
+      'time_trial_ms' in patch
+        ? patch.time_trial_ms ?? null
+        : existing?.time_trial_ms == null
+          ? null
+          : Number(existing.time_trial_ms),
   };
 
   const { data, error } = await supabase
     .from('player_tryout_days')
     .upsert(next, { onConflict: 'player_id,day' })
-    .select('day, tryout_number, attended')
+    .select('day, tryout_number, attended, time_trial_ms')
     .single();
   if (error) throw error;
   return mapTryoutDay(data as Record<string, unknown>);
+}
+
+/** Clear time_trial_ms for many players on one day (single update). */
+export async function clearTryoutDayTimes(params: {
+  playerIds: string[];
+  day: number;
+}): Promise<void> {
+  const { playerIds, day } = params;
+  if (day < 1 || day > 5) throw new Error('Invalid tryout day');
+  const unique = [...new Set(playerIds.filter(Boolean))];
+  if (unique.length === 0) return;
+
+  const { error } = await supabase
+    .from('player_tryout_days')
+    .update({ time_trial_ms: null })
+    .eq('day', day)
+    .in('player_id', unique);
+  if (error) throw error;
 }
 
 /**

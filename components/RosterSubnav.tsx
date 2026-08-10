@@ -32,6 +32,7 @@ type MainTab =
   | 'assign'
   | 'players'
   | 'tryout'
+  | 'time-trial'
   | 'print'
   | 'team';
 
@@ -54,6 +55,7 @@ function mainTabFromPath(pathname: string): MainTab | null {
   if (pathname.includes('/add') || pathname.includes('/import')) return null;
   if (pathname.includes('/assign')) return 'assign';
   if (pathname.includes('/players')) return 'players';
+  if (pathname.includes('/time-trial')) return 'time-trial';
   if (pathname.includes('/tryout')) return 'tryout';
   if (pathname.includes('/depth')) return 'depth';
   if (pathname.includes('/rosters') || pathname.includes('/planner')) {
@@ -89,6 +91,7 @@ export function RosterSubnav({ rosterId }: Props) {
   const onAssign = activeTab === 'assign';
   const onAllPlayers = activeTab === 'players';
   const onTryout = activeTab === 'tryout';
+  const onTimeTrial = activeTab === 'time-trial';
   const onPlanner = pathname.includes('/planner');
   const onDepth = activeTab === 'depth';
   const onRosters = pathname.includes('/rosters');
@@ -129,6 +132,12 @@ export function RosterSubnav({ rosterId }: Props) {
             shortLabel: 'Tryout',
             href: `/roster/${rosterId}/tryout` as Href,
           },
+          {
+            key: 'time-trial' as const,
+            label: 'Time Trial',
+            shortLabel: 'Times',
+            href: `/roster/${rosterId}/time-trial` as Href,
+          },
         ]
       : []),
   ];
@@ -149,7 +158,14 @@ export function RosterSubnav({ rosterId }: Props) {
   function goPrint(path: 'rosters' | 'planner') {
     setPrintMenuOpen(false);
     setAccountMenuOpen(false);
+    if (path === 'rosters' && onRosters) return;
+    if (path === 'planner' && onPlanner) return;
     router.replace(`/roster/${rosterId}/${path}`);
+  }
+
+  function goTab(tab: NavTab) {
+    if (isTabActive(tab.key)) return;
+    router.replace(tab.href);
   }
 
   function goTeamInvites() {
@@ -181,7 +197,10 @@ export function RosterSubnav({ rosterId }: Props) {
         void (async () => {
           try {
             await endTryout();
-            if (pathname.includes('/tryout')) {
+            if (
+              pathname.includes('/tryout') ||
+              pathname.includes('/time-trial')
+            ) {
               router.replace(`/roster/${rosterId}/players`);
             }
           } catch {
@@ -230,6 +249,78 @@ export function RosterSubnav({ rosterId }: Props) {
       return;
     }
     setPrintMenuOpen((open) => !open);
+  }
+
+  function currentPageLabel() {
+    if (onPrintView) return onPlanner ? 'Squad Planner' : 'Rosters';
+    const tab = navTabs.find((t) => isTabActive(t.key));
+    return tab?.label ?? 'Page';
+  }
+
+  function openPageMenu() {
+    setAccountMenuOpen(false);
+    setPrintMenuOpen(false);
+    const mainTabs = navTabs.filter(
+      (t) => t.key !== 'tryout' && t.key !== 'time-trial'
+    );
+    const tryoutTabs = navTabs.filter(
+      (t) => t.key === 'tryout' || t.key === 'time-trial'
+    );
+    const TRYOUT_SECTION = '—— Tryout mode ——';
+    const pageOptions = [
+      ...mainTabs.map((t) => t.label),
+      'Rosters',
+      'Squad Planner',
+      ...(tryoutTabs.length > 0
+        ? [TRYOUT_SECTION, ...tryoutTabs.map((t) => t.label)]
+        : []),
+    ];
+    const options = ['Cancel', ...pageOptions];
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options,
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex <= 0) return;
+          const label = pageOptions[buttonIndex - 1];
+          if (label === TRYOUT_SECTION) return;
+          if (label === 'Rosters') {
+            goPrint('rosters');
+            return;
+          }
+          if (label === 'Squad Planner') {
+            goPrint('planner');
+            return;
+          }
+          const tab = navTabs.find((t) => t.label === label);
+          if (tab) goTab(tab);
+        }
+      );
+      return;
+    }
+    Alert.alert('Go to', undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      ...mainTabs.map((tab) => ({
+        text: tab.label,
+        onPress: () => goTab(tab),
+      })),
+      { text: 'Rosters', onPress: () => goPrint('rosters') },
+      { text: 'Squad Planner', onPress: () => goPrint('planner') },
+      ...(tryoutTabs.length > 0
+        ? [
+            {
+              text: TRYOUT_SECTION,
+              onPress: () => {},
+            },
+            ...tryoutTabs.map((tab) => ({
+              text: tab.label,
+              onPress: () => goTab(tab),
+            })),
+          ]
+        : []),
+    ]);
   }
 
   function openAccountMenu() {
@@ -294,6 +385,7 @@ export function RosterSubnav({ rosterId }: Props) {
     if (key === 'depth') return onDepth;
     if (key === 'assign') return onAssign;
     if (key === 'tryout') return onTryout;
+    if (key === 'time-trial') return onTimeTrial;
     return onAllPlayers;
   }
 
@@ -377,43 +469,12 @@ export function RosterSubnav({ rosterId }: Props) {
             <RoleSwitcher />
           </View>
 
-          <View style={styles.phoneTabGrid}>
-            {navTabs.map((tab) => {
-              const active = isTabActive(tab.key);
-              return (
-                <Pressable
-                  key={tab.key}
-                  style={[styles.phoneTab, active && styles.tabActive]}
-                  onPress={() => router.replace(tab.href)}
-                >
-                  <Text
-                    style={[styles.phoneTabText, active && styles.tabTextActive]}
-                    numberOfLines={1}
-                  >
-                    {tab.shortLabel}
-                  </Text>
-                </Pressable>
-              );
-            })}
-            <Pressable
-              style={[
-                styles.phoneTab,
-                styles.phoneTabWide,
-                onPrintView && styles.tabActive,
-              ]}
-              onPress={openPrintMenu}
-            >
-              <Text
-                style={[
-                  styles.phoneTabText,
-                  onPrintView && styles.tabTextActive,
-                ]}
-                numberOfLines={1}
-              >
-                Print View ▾
-              </Text>
-            </Pressable>
-          </View>
+          <Pressable style={styles.phonePageBtn} onPress={openPageMenu}>
+            <Text style={styles.phonePageLabel} numberOfLines={1}>
+              {currentPageLabel()}
+            </Text>
+            <Text style={styles.phonePageChevron}>▾</Text>
+          </Pressable>
         </View>
         {statusBanners}
         <HoldTryoutModal
@@ -451,22 +512,24 @@ export function RosterSubnav({ rosterId }: Props) {
           </View>
 
           <View style={styles.tabs}>
-            {navTabs.map((tab) => {
-              const active = isTabActive(tab.key);
-              return (
-                <Pressable
-                  key={tab.key}
-                  style={[styles.tab, active && styles.tabActive]}
-                  onPress={() => router.replace(tab.href)}
-                >
-                  <Text
-                    style={[styles.tabText, active && styles.tabTextActive]}
+            {navTabs
+              .filter((t) => t.key !== 'tryout' && t.key !== 'time-trial')
+              .map((tab) => {
+                const active = isTabActive(tab.key);
+                return (
+                  <Pressable
+                    key={tab.key}
+                    style={[styles.tab, active && styles.tabActive]}
+                    onPress={() => goTab(tab)}
                   >
-                    {tab.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
+                    <Text
+                      style={[styles.tabText, active && styles.tabTextActive]}
+                    >
+                      {tab.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             <View style={styles.printWrap}>
               <Pressable
                 style={[styles.tab, onPrintView && styles.tabActive]}
@@ -515,6 +578,37 @@ export function RosterSubnav({ rosterId }: Props) {
                 </View>
               ) : null}
             </View>
+            {tryoutActive ? (
+              <>
+                <View style={styles.tryoutDivider} />
+                {navTabs
+                  .filter((t) => t.key === 'tryout' || t.key === 'time-trial')
+                  .map((tab) => {
+                    const active = isTabActive(tab.key);
+                    return (
+                      <Pressable
+                        key={tab.key}
+                        style={[
+                          styles.tab,
+                          styles.tryoutTab,
+                          active && styles.tryoutTabActive,
+                        ]}
+                        onPress={() => goTab(tab)}
+                      >
+                        <Text
+                          style={[
+                            styles.tabText,
+                            styles.tryoutTabText,
+                            active && styles.tryoutTabTextActive,
+                          ]}
+                        >
+                          {tab.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+              </>
+            ) : null}
           </View>
 
           <View style={[styles.side, styles.userSide]}>
@@ -648,31 +742,29 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.muted,
   },
-  phoneTabGrid: {
+  phonePageBtn: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
-  },
-  phoneTab: {
-    flexGrow: 1,
-    flexBasis: '46%',
-    minHeight: 40,
-    paddingHorizontal: 10,
+    minHeight: 42,
+    paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  phoneTabWide: {
-    flexBasis: '100%',
-  },
-  phoneTabText: {
-    fontWeight: '700',
+  phonePageLabel: {
+    flex: 1,
+    fontWeight: '800',
     color: colors.text,
-    fontSize: 13,
+    fontSize: 15,
+  },
+  phonePageChevron: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.muted,
   },
   offlineBanner: {
     paddingHorizontal: 16,
@@ -755,6 +847,26 @@ const styles = StyleSheet.create({
   tabActive: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+  },
+  tryoutDivider: {
+    width: 1,
+    alignSelf: 'stretch',
+    backgroundColor: '#c5e4d4',
+    marginHorizontal: 4,
+  },
+  tryoutTab: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderColor: '#9cc4b3',
+  },
+  tryoutTabActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  tryoutTabText: {
+    color: '#0a5a41',
+  },
+  tryoutTabTextActive: {
+    color: colors.primaryText,
   },
   tabText: {
     fontWeight: '700',

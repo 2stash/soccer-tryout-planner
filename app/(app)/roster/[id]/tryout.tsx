@@ -312,13 +312,17 @@ export default function TryoutScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.content}>
-          <Text style={styles.heading}>
-            {roster ? `${roster.name} · Tryout` : 'Tryout'}
-          </Text>
-          <Text style={styles.sub}>
-            Set bib numbers and attendance per day. Tap a name to edit the
-            player. Duplicate numbers on the selected day are highlighted.
-          </Text>
+          {!isPhone ? (
+            <>
+              <Text style={styles.heading}>
+                {roster ? `${roster.name} · Tryout` : 'Tryout'}
+              </Text>
+              <Text style={styles.sub}>
+                Set bib numbers and attendance per day. Tap a name to edit the
+                player. Duplicate numbers on the selected day are highlighted.
+              </Text>
+            </>
+          ) : null}
 
           <View style={styles.dayRow}>
             {dayOptions.map((opt) => {
@@ -496,46 +500,75 @@ export default function TryoutScreen() {
                   day !== 'all'
                     ? (dayRow(player, day)?.attended ?? false)
                     : false;
-                const denser = !isPhone;
 
                 return (
                   <View
                     key={player.id}
                     style={[
                       styles.card,
-                      denser && styles.cardDense,
+                      styles.cardRow,
+                      isPhone && styles.cardRowPhone,
                       index % 2 === 1 && styles.cardAlt,
                       isDup && styles.cardDup,
                     ]}
                   >
                     <Pressable
-                      style={styles.cardIdentity}
+                      style={[
+                        styles.cardIdentity,
+                        isPhone && styles.cardIdentityPhone,
+                      ]}
                       onPress={() => setEditing(player)}
                     >
-                      <Text style={styles.cardName} numberOfLines={1}>
+                      <Text
+                        style={[styles.cardName, isPhone && styles.cardNamePhone]}
+                        numberOfLines={1}
+                      >
                         {player.last_name}, {player.first_name}
                       </Text>
-                      <Text style={styles.cardYear} numberOfLines={1}>
+                      <Text
+                        style={[styles.cardYear, isPhone && styles.cardYearPhone]}
+                        numberOfLines={1}
+                      >
                         {player.school_year || '—'}
                       </Text>
                     </Pressable>
 
-                    <View style={styles.cardControls}>
+                    <View
+                      style={[
+                        styles.cardControls,
+                        isPhone && styles.cardControlsPhone,
+                      ]}
+                    >
                       <Pressable
-                        style={styles.numBtn}
+                        style={[styles.numBtn, isPhone && styles.numBtnPhone]}
                         onPress={() => setPickerPlayerId(player.id)}
                       >
                         <Text style={styles.numBtnLabel}>#</Text>
-                        <Text style={styles.numBtnValue}>
+                        <Text
+                          style={[
+                            styles.numBtnValue,
+                            isPhone && styles.numBtnValuePhone,
+                          ]}
+                        >
                           {num != null ? String(num) : '—'}
                         </Text>
                       </Pressable>
 
                       {day === 'all' ? (
-                        <View style={styles.attendedSummary}>
-                          <Text style={styles.attendedSummaryLabel}>Days</Text>
+                        <View
+                          style={[
+                            styles.attendedSummary,
+                            isPhone && styles.attendedSummaryPhone,
+                          ]}
+                        >
+                          {!isPhone ? (
+                            <Text style={styles.attendedSummaryLabel}>Days</Text>
+                          ) : null}
                           <Text
-                            style={styles.attendedSummaryValue}
+                            style={[
+                              styles.attendedSummaryValue,
+                              isPhone && styles.attendedSummaryValuePhone,
+                            ]}
                             numberOfLines={1}
                           >
                             {attendedSummary(player, dayCount)}
@@ -545,6 +578,7 @@ export default function TryoutScreen() {
                         <Pressable
                           style={[
                             styles.attendBtn,
+                            isPhone && styles.attendBtnPhone,
                             attended
                               ? styles.attendBtnYes
                               : styles.attendBtnNo,
@@ -554,12 +588,19 @@ export default function TryoutScreen() {
                           <Text
                             style={[
                               styles.attendBtnText,
+                              isPhone && styles.attendBtnTextPhone,
                               attended
                                 ? styles.attendBtnTextYes
                                 : styles.attendBtnTextNo,
                             ]}
                           >
-                            {attended ? 'Attended' : 'Missed'}
+                            {isPhone
+                              ? attended
+                                ? 'In'
+                                : 'Out'
+                              : attended
+                                ? 'Attended'
+                                : 'Missed'}
                           </Text>
                         </Pressable>
                       )}
@@ -795,11 +836,17 @@ const styles = StyleSheet.create({
     gap: 10,
     backgroundColor: colors.surface,
   },
-  cardDense: {
+  cardRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 10,
+    gap: 8,
+  },
+  cardRowPhone: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 6,
   },
   cardAlt: {
     backgroundColor: '#f7f9fb',
@@ -811,24 +858,40 @@ const styles = StyleSheet.create({
   },
   cardIdentity: {
     flex: 1,
-    gap: 2,
-    minWidth: 120,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+  },
+  cardIdentityPhone: {
+    gap: 6,
   },
   cardName: {
+    flexShrink: 1,
     color: colors.text,
     fontWeight: '700',
     fontSize: 15,
+  },
+  cardNamePhone: {
+    fontSize: 13,
   },
   cardYear: {
     color: colors.muted,
     fontSize: 13,
     fontWeight: '600',
+    flexShrink: 0,
+  },
+  cardYearPhone: {
+    fontSize: 12,
   },
   cardControls: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    flexWrap: 'wrap',
+    flexShrink: 0,
+  },
+  cardControlsPhone: {
+    gap: 6,
   },
   numBtn: {
     flexDirection: 'row',
@@ -842,6 +905,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     minWidth: 64,
   },
+  numBtnPhone: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    minWidth: 48,
+    gap: 3,
+    borderRadius: 8,
+  },
   numBtnLabel: {
     fontSize: 12,
     fontWeight: '800',
@@ -852,12 +922,30 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
   },
+  numBtnValuePhone: {
+    fontSize: 13,
+  },
   attendBtn: {
     borderRadius: layout.radius,
     paddingHorizontal: 12,
     paddingVertical: 8,
     minWidth: 88,
     alignItems: 'center',
+  },
+  attendBtnPhone: {
+    minWidth: 44,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  attendBtnTextPhone: {
+    fontSize: 12,
+  },
+  attendedSummaryPhone: {
+    minWidth: 40,
+  },
+  attendedSummaryValuePhone: {
+    fontSize: 12,
   },
   attendBtnYes: {
     backgroundColor: '#d1fae5',

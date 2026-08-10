@@ -121,8 +121,14 @@ type OfflineOpBody =
       day: number;
       tryoutNumber?: number | null;
       attended?: boolean;
+      timeTrialMs?: number | null;
       /** When setting a number, prepopulate later null days through this count. */
       dayCount?: number;
+    }
+  | {
+      type: 'clearTryoutDayTimes';
+      day: number;
+      playerIds: string[];
     };
 
 export type OfflineOp = OfflineOpBase & OfflineOpBody;
