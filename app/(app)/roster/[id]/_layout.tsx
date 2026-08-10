@@ -1,5 +1,6 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { View, StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { OfflineConflictModal } from '@/components/OfflineConflictModal';
 import { RosterSubnav } from '@/components/RosterSubnav';
 import { ActiveRoleProvider } from '@/lib/ActiveRoleContext';
@@ -34,10 +35,16 @@ function OfflineConflictHost() {
 
 export default function RosterLayout() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const insets = useSafeAreaInsets();
+  // Landscape Dynamic Island / notch sits on the left or right edge.
+  const safePadStyle = {
+    paddingLeft: Math.max(insets.left, 0),
+    paddingRight: Math.max(insets.right, 0),
+  };
 
   if (!id) {
     return (
-      <View style={styles.wrap}>
+      <View style={[styles.wrap, safePadStyle]}>
         <Stack
           screenOptions={{
             headerShown: false,
@@ -53,7 +60,7 @@ export default function RosterLayout() {
       <OfflineProvider>
         <MasterConflictProvider>
           <RosterDataProvider rosterId={id}>
-            <View style={styles.wrap}>
+            <View style={[styles.wrap, safePadStyle]}>
               <RosterSubnav rosterId={id} />
               <OfflineConflictHost />
               <Stack

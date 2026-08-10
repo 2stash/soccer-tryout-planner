@@ -56,22 +56,25 @@ export function RoleSwitcher() {
 
 const styles = StyleSheet.create({
   wrap: {
-    maxWidth: 160,
-    paddingHorizontal: 4,
-    paddingVertical: 2,
+    maxWidth: '100%',
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexWrap: 'wrap',
+    gap: 6,
   },
   label: {
     color: colors.muted,
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 11,
+    fontWeight: '800',
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
   roles: {
-    color: colors.text,
-    fontWeight: '700',
+    color: colors.muted,
+    fontWeight: '600',
     fontSize: 12,
-    marginTop: 1,
   },
   actingMuted: {
     color: colors.muted,

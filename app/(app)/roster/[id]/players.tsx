@@ -12,6 +12,7 @@ import {
   PlayerTable,
   type PlayerTableSortKey,
 } from '@/components/PlayerTable';
+import { PlayerEditSheet } from '@/components/PlayerEditSheet';
 import { useAuth } from '@/lib/AuthContext';
 import { confirmAction } from '@/lib/confirm';
 import {
@@ -26,12 +27,82 @@ import { alertRequiresOnline } from '@/lib/offline/gate';
 import { useOffline } from '@/lib/offline/OfflineContext';
 import { useRosterData } from '@/lib/RosterDataContext';
 import { useLayout } from '@/lib/layout';
+import { comparePlayersByName } from '@/lib/playerSort';
+import { formatPositionsShort } from '@/lib/positions';
 import {
   CLASS_ORDER_DESC,
   countBySchoolYear,
+  schoolYearSortKey,
 } from '@/lib/schoolYear';
 import type { Player, PlayerAssignment, PlayerInput } from '@/lib/types';
+import { SQUAD_TEAMS, UNAVAILABLE_POOL } from '@/lib/types';
 import { colors, layout } from '@/constants/theme';
+
+function playerMetaLine(player: Player, omitYear: boolean) {
+  const parts: string[] = [];
+  if (!omitYear && player.school_year) parts.push(player.school_year);
+  const pos = formatPositionsShort(player.positions);
+  if (pos) parts.push(pos);
+  if (player.squad_team === UNAVAILABLE_POOL) parts.push('Unavailable');
+  else if (player.squad_team) {
+    const team = SQUAD_TEAMS.find((t) => t.id === player.squad_team);
+    parts.push(team?.shortLabel ?? player.squad_team);
+  } else {
+    parts.push('Available');
+  }
+  return parts.join(' · ');
+}
+
+function matchesPlayerFilter(player: Player, raw: string) {
+  const q = raw.trim().toLowerCase();
+  if (!q) return true;
+  const posLabel = formatPositionsShort(player.positions).toLowerCase();
+  const squadLabel =
+    player.squad_team === 'varsity'
+      ? 'varsity'
+      : player.squad_team === 'jv'
+        ? 'jv'
+        : player.squad_team === 'fr_soph'
+          ? 'fr/soph fr soph'
+          : player.squad_team === UNAVAILABLE_POOL
+            ? 'unavailable'
+            : 'available unassigned';
+  return (
+    (player.first_name ?? '').toLowerCase().includes(q) ||
+    (player.last_name ?? '').toLowerCase().includes(q) ||
+    posLabel.includes(q) ||
+    (player.school_year ?? '').toLowerCase().includes(q) ||
+    squadLabel.includes(q)
+  );
+}
+
+function sortPlayersList(
+  list: Player[],
+  sortKey: PlayerTableSortKey,
+  sortAsc: boolean
+): Player[] {
+  return [...list].sort((a, b) => {
+    if (sortKey === 'school_year') {
+      const cmp =
+        schoolYearSortKey(a.school_year) - schoolYearSortKey(b.school_year);
+      if (cmp !== 0) return sortAsc ? cmp : -cmp;
+      return comparePlayersByName(a, b);
+    }
+    if (sortKey === 'first_name') {
+      const cmp = (a.first_name ?? '').localeCompare(
+        b.first_name ?? '',
+        undefined,
+        { sensitivity: 'base' }
+      );
+      if (cmp !== 0) return sortAsc ? cmp : -cmp;
+      return (a.last_name ?? '').localeCompare(b.last_name ?? '', undefined, {
+        sensitivity: 'base',
+      });
+    }
+    const cmp = comparePlayersByName(a, b);
+    return sortAsc ? cmp : -cmp;
+  });
+}
 
 const GRADE_FILTERS: { key: GradeFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -40,7 +111,7 @@ const GRADE_FILTERS: { key: GradeFilter; label: string }[] = [
 
 export default function AllPlayersScreen() {
   const { session, loading: authLoading, configured } = useAuth();
-  const { isCompact } = useLayout();
+  const { isPhone, isCompact } = useLayout();
   const { isOnline } = useOffline();
   const {
     rosterId,
@@ -59,6 +130,7 @@ export default function AllPlayersScreen() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<PlayerTableSortKey>('last_name');
   const [sortAsc, setSortAsc] = useState(true);
+  const [editing, setEditing] = useState<Player | null>(null);
 
   const classCounts = useMemo(() => countBySchoolYear(players), [players]);
 
@@ -66,6 +138,13 @@ export default function AllPlayersScreen() {
     () => filterAvailableByGrade(players, gradeFilter),
     [players, gradeFilter]
   );
+
+  const cardPlayers = useMemo(() => {
+    const filtered = gradeVisible.filter((p) =>
+      matchesPlayerFilter(p, filter)
+    );
+    return sortPlayersList(filtered, sortKey, sortAsc);
+  }, [gradeVisible, filter, sortKey, sortAsc]);
 
   const displayError = localError ?? error;
 
@@ -97,6 +176,7 @@ export default function AllPlayersScreen() {
           setLocalError(null);
           try {
             await removePlayer(player);
+            setEditing(null);
           } catch (e) {
             setLocalError(
               e instanceof Error ? e.message : 'Failed to delete player'
@@ -105,6 +185,11 @@ export default function AllPlayersScreen() {
         })();
       },
     });
+  }
+
+  async function handleDeleteFromSheet(player: Player) {
+    setLocalError(null);
+    await removePlayer(player);
   }
 
   function handleSort(key: PlayerTableSortKey) {
@@ -140,8 +225,9 @@ export default function AllPlayersScreen() {
             {roster ? `${roster.name} · All Players` : 'All Players'}
           </Text>
           <Text style={styles.sub}>
-            Edit name, year, positions, or team. Tap column headers to sort;
-            Sort orders by class (Sr→Fr) then name.
+            {isPhone
+              ? 'Tap a player to edit. Sort orders by class (Sr→Fr) then name.'
+              : 'Edit name, year, positions, or team. Tap column headers to sort; Sort orders by class (Sr→Fr) then name.'}
           </Text>
 
           <View style={styles.toolbar}>
@@ -297,33 +383,72 @@ export default function AllPlayersScreen() {
             </Pressable>
           ) : null}
 
-          <PlayerTable
-            players={gradeVisible}
-            filter={filter}
-            sortKey={sortKey}
-            sortAsc={sortAsc}
-            onSort={handleSort}
-            onSave={handleSave}
-            onDelete={handleDelete}
-            onAssignSquad={handleAssignSquad}
-            showSquadColumn
-            showRankColumns={false}
-            showRoleColumn={false}
-            showDelete
-            sectionsPending={loading && players.length === 0}
-          />
+          {isPhone ? (
+            <View style={styles.cardList}>
+              {loading && players.length === 0 ? (
+                <Text style={styles.empty}>Loading players…</Text>
+              ) : cardPlayers.length === 0 ? (
+                <Text style={styles.empty}>No players match.</Text>
+              ) : (
+                cardPlayers.map((player, index) => {
+                  const meta = playerMetaLine(player, gradeFilter !== 'all');
+                  return (
+                    <Pressable
+                      key={player.id}
+                      style={[styles.card, index % 2 === 1 && styles.cardAlt]}
+                      onPress={() => setEditing(player)}
+                    >
+                      <Text style={styles.cardName} numberOfLines={1}>
+                        {player.last_name}, {player.first_name}
+                      </Text>
+                      {meta ? (
+                        <Text style={styles.cardMeta} numberOfLines={2}>
+                          {meta}
+                        </Text>
+                      ) : null}
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+          ) : (
+            <PlayerTable
+              players={gradeVisible}
+              filter={filter}
+              sortKey={sortKey}
+              sortAsc={sortAsc}
+              onSort={handleSort}
+              onSave={handleSave}
+              onDelete={handleDelete}
+              onAssignSquad={handleAssignSquad}
+              showSquadColumn
+              showRankColumns={false}
+              showRoleColumn={false}
+              showDelete
+              sectionsPending={loading && players.length === 0}
+            />
+          )}
 
           <Text style={styles.hint}>
             {loading && players.length === 0
               ? 'Loading players…'
-              : `${gradeVisible.length} player${
-                  gradeVisible.length === 1 ? '' : 's'
+              : `${(isPhone ? cardPlayers : gradeVisible).length} player${
+                  (isPhone ? cardPlayers : gradeVisible).length === 1 ? '' : 's'
                 }${
                   gradeFilter === 'all' ? '' : ` · ${gradeFilter}`
                 }${filter.trim() ? ' (filtered)' : ''}`}
           </Text>
         </View>
       </ScrollView>
+
+      <PlayerEditSheet
+        player={editing}
+        visible={Boolean(editing)}
+        onClose={() => setEditing(null)}
+        onSave={handleSave}
+        onAssignSquad={handleAssignSquad}
+        onDelete={handleDeleteFromSheet}
+      />
     </View>
   );
 }
@@ -492,5 +617,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.muted,
     fontWeight: '600',
+  },
+  cardList: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: layout.radius,
+    overflow: 'hidden',
+    backgroundColor: colors.surface,
+  },
+  card: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: 2,
+    backgroundColor: colors.surface,
+  },
+  cardAlt: {
+    backgroundColor: '#f7f9fb',
+  },
+  cardName: {
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  cardMeta: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  empty: {
+    color: colors.muted,
+    fontSize: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
   },
 });

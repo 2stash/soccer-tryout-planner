@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActionSheetIOS,
+  Alert,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { router, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RoleSwitcher } from '@/components/RoleSwitcher';
@@ -21,6 +29,13 @@ type MainTab =
   | 'players'
   | 'print'
   | 'team';
+
+type NavTab = {
+  key: Exclude<MainTab, 'print' | 'team'>;
+  label: string;
+  shortLabel: string;
+  href: string;
+};
 
 function userLabel(email: string | undefined) {
   if (!email) return 'Signed in';
@@ -45,7 +60,7 @@ function mainTabFromPath(pathname: string): MainTab | null {
 export function RosterSubnav({ rosterId }: Props) {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
-  const { isTablet } = useLayout();
+  const { isPhone, isTablet } = useLayout();
   const { user, signOut } = useAuth();
   const { isAdmin } = useActiveRole();
   const {
@@ -69,6 +84,33 @@ export function RosterSubnav({ rosterId }: Props) {
   const onTeam = activeTab === 'team';
   const onPrintView = activeTab === 'print';
   const onPositions = activeTab === 'positions';
+
+  const navTabs: NavTab[] = [
+    {
+      key: 'positions',
+      label: 'Assign Positions',
+      shortLabel: 'Positions',
+      href: `/roster/${rosterId}`,
+    },
+    {
+      key: 'depth',
+      label: 'Depth Chart',
+      shortLabel: 'Depth',
+      href: `/roster/${rosterId}/depth`,
+    },
+    {
+      key: 'assign',
+      label: 'Assign Squads',
+      shortLabel: 'Squads',
+      href: `/roster/${rosterId}/assign`,
+    },
+    {
+      key: 'players',
+      label: 'All Players',
+      shortLabel: 'Players',
+      href: `/roster/${rosterId}/players`,
+    },
+  ];
 
   useEffect(() => {
     setPrintMenuOpen(false);
@@ -94,16 +136,211 @@ export function RosterSubnav({ rosterId }: Props) {
     router.replace(`/roster/${rosterId}/team`);
   }
 
+  function openPrintMenu() {
+    setAccountMenuOpen(false);
+    if (isPhone) {
+      const options = ['Cancel', 'Rosters', 'Squad Planner'] as const;
+      if (Platform.OS === 'ios') {
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            options: [...options],
+            cancelButtonIndex: 0,
+          },
+          (buttonIndex) => {
+            if (buttonIndex === 1) goPrint('rosters');
+            if (buttonIndex === 2) goPrint('planner');
+          }
+        );
+        return;
+      }
+      Alert.alert('Print View', undefined, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Rosters', onPress: () => goPrint('rosters') },
+        { text: 'Squad Planner', onPress: () => goPrint('planner') },
+      ]);
+      return;
+    }
+    setPrintMenuOpen((open) => !open);
+  }
+
+  function openAccountMenu() {
+    setPrintMenuOpen(false);
+    if (isPhone) {
+      const options = isAdmin
+        ? (['Cancel', 'Team / Invites', 'Sign out'] as const)
+        : (['Cancel', 'Sign out'] as const);
+      if (Platform.OS === 'ios') {
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            options: [...options],
+            cancelButtonIndex: 0,
+            destructiveButtonIndex: options.length - 1,
+          },
+          (buttonIndex) => {
+            if (isAdmin) {
+              if (buttonIndex === 1) goTeamInvites();
+              if (buttonIndex === 2) void handleSignOut();
+            } else if (buttonIndex === 1) {
+              void handleSignOut();
+            }
+          }
+        );
+        return;
+      }
+      Alert.alert('Account', userLabel(user?.email), [
+        { text: 'Cancel', style: 'cancel' },
+        ...(isAdmin
+          ? [{ text: 'Team / Invites', onPress: () => goTeamInvites() }]
+          : []),
+        {
+          text: 'Sign out',
+          style: 'destructive' as const,
+          onPress: () => void handleSignOut(),
+        },
+      ]);
+      return;
+    }
+    setAccountMenuOpen((open) => !open);
+  }
+
+  function isTabActive(key: NavTab['key']) {
+    if (key === 'positions') return onPositions;
+    if (key === 'depth') return onDepth;
+    if (key === 'assign') return onAssign;
+    return onAllPlayers;
+  }
+
+  const topPad = Math.max(insets.top, 8) + (isTablet ? 20 : isPhone ? 4 : 8);
+  // Horizontal safe area is applied by the roster layout; keep only content gutter here.
+  const sidePad = isPhone ? 12 : 20;
+
+  const statusBanners = (
+    <>
+      {!isOnline ? (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            {offlineReady
+              ? pendingCount > 0
+                ? `Offline — ${pendingCount} change${pendingCount === 1 ? '' : 's'} pending`
+                : 'Offline — editing saved on this device'
+              : 'Offline — connect once to use this roster offline'}
+          </Text>
+        </View>
+      ) : null}
+      {isOnline && isSyncing ? (
+        <View style={styles.syncBanner}>
+          <Text style={styles.offlineBannerText}>
+            Syncing{pendingCount > 0 ? ` (${pendingCount} left)` : '…'}
+          </Text>
+        </View>
+      ) : null}
+      {isOnline && !isSyncing && pendingCount > 0 && !syncError ? (
+        <Pressable style={styles.syncBanner} onPress={retrySync}>
+          <Text style={styles.offlineBannerText}>
+            {pendingCount} change{pendingCount === 1 ? '' : 's'} waiting to
+            sync. Tap to sync now.
+          </Text>
+        </Pressable>
+      ) : null}
+      {isOnline && syncError ? (
+        <Pressable style={styles.syncErrorBanner} onPress={retrySync}>
+          <Text style={styles.offlineBannerText}>
+            Sync failed: {syncError}. Tap to retry.
+          </Text>
+        </Pressable>
+      ) : null}
+    </>
+  );
+
+  if (isPhone) {
+    return (
+      <View style={styles.wrap}>
+        <View
+          style={[
+            styles.phoneBar,
+            {
+              paddingTop: topPad,
+              paddingHorizontal: sidePad,
+            },
+          ]}
+        >
+          <View style={styles.phoneTopRow}>
+            <Pressable
+              style={styles.dashboard}
+              onPress={() => router.replace('/dashboard')}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+            >
+              <Text style={styles.dashboardText}>Dashboard</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.phoneAccountBtn,
+                onTeam && styles.phoneAccountBtnActive,
+              ]}
+              onPress={openAccountMenu}
+            >
+              <Text style={styles.phoneAccountText} numberOfLines={1}>
+                {userLabel(user?.email)}
+              </Text>
+              <Text style={styles.phoneAccountChevron}>▾</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.phoneRoleRow}>
+            <RoleSwitcher />
+          </View>
+
+          <View style={styles.phoneTabGrid}>
+            {navTabs.map((tab) => {
+              const active = isTabActive(tab.key);
+              return (
+                <Pressable
+                  key={tab.key}
+                  style={[styles.phoneTab, active && styles.tabActive]}
+                  onPress={() => router.replace(tab.href)}
+                >
+                  <Text
+                    style={[styles.phoneTabText, active && styles.tabTextActive]}
+                    numberOfLines={1}
+                  >
+                    {tab.shortLabel}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            <Pressable
+              style={[
+                styles.phoneTab,
+                styles.phoneTabWide,
+                onPrintView && styles.tabActive,
+              ]}
+              onPress={openPrintMenu}
+            >
+              <Text
+                style={[
+                  styles.phoneTabText,
+                  onPrintView && styles.tabTextActive,
+                ]}
+                numberOfLines={1}
+              >
+                Print View ▾
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+        {statusBanners}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.wrap}>
       <View
         style={[
           styles.bar,
           {
-            // iPad status / multitasking chrome needs extra clearance.
-            paddingTop: Math.max(insets.top, 8) + (isTablet ? 20 : 8),
-            paddingLeft: Math.max(insets.left, 20),
-            paddingRight: Math.max(insets.right, 20),
+            paddingTop: topPad,
+            paddingHorizontal: sidePad,
           },
         ]}
       >
@@ -119,55 +356,29 @@ export function RosterSubnav({ rosterId }: Props) {
           </View>
 
           <View style={styles.tabs}>
-            <Pressable
-              style={[styles.tab, onPositions && styles.tabActive]}
-              onPress={() => router.replace(`/roster/${rosterId}`)}
-            >
-              <Text
-                style={[styles.tabText, onPositions && styles.tabTextActive]}
-              >
-                Assign Positions
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[styles.tab, onDepth && styles.tabActive]}
-              onPress={() => router.replace(`/roster/${rosterId}/depth`)}
-            >
-              <Text style={[styles.tabText, onDepth && styles.tabTextActive]}>
-                Depth Chart
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[styles.tab, onAssign && styles.tabActive]}
-              onPress={() => router.replace(`/roster/${rosterId}/assign`)}
-            >
-              <Text style={[styles.tabText, onAssign && styles.tabTextActive]}>
-                Assign Squads
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[styles.tab, onAllPlayers && styles.tabActive]}
-              onPress={() => router.replace(`/roster/${rosterId}/players`)}
-            >
-              <Text
-                style={[styles.tabText, onAllPlayers && styles.tabTextActive]}
-              >
-                All Players
-              </Text>
-            </Pressable>
+            {navTabs.map((tab) => {
+              const active = isTabActive(tab.key);
+              return (
+                <Pressable
+                  key={tab.key}
+                  style={[styles.tab, active && styles.tabActive]}
+                  onPress={() => router.replace(tab.href)}
+                >
+                  <Text
+                    style={[styles.tabText, active && styles.tabTextActive]}
+                  >
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
             <View style={styles.printWrap}>
               <Pressable
                 style={[styles.tab, onPrintView && styles.tabActive]}
-                onPress={() => {
-                  setAccountMenuOpen(false);
-                  setPrintMenuOpen((open) => !open);
-                }}
+                onPress={openPrintMenu}
               >
                 <Text
-                  style={[
-                    styles.tabText,
-                    onPrintView && styles.tabTextActive,
-                  ]}
+                  style={[styles.tabText, onPrintView && styles.tabTextActive]}
                 >
                   {`Print View${printMenuOpen ? ' ▲' : ' ▼'}`}
                 </Text>
@@ -219,10 +430,7 @@ export function RosterSubnav({ rosterId }: Props) {
                   styles.accountBtn,
                   (accountMenuOpen || onTeam) && styles.accountBtnOpen,
                 ]}
-                onPress={() => {
-                  setPrintMenuOpen(false);
-                  setAccountMenuOpen((open) => !open);
-                }}
+                onPress={openAccountMenu}
               >
                 <Text style={styles.accountBtnLabel}>Account</Text>
                 <Text style={styles.accountBtnUser} numberOfLines={1}>
@@ -262,39 +470,7 @@ export function RosterSubnav({ rosterId }: Props) {
           </View>
         </View>
       </View>
-      {!isOnline ? (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>
-            {offlineReady
-              ? pendingCount > 0
-                ? `Offline — ${pendingCount} change${pendingCount === 1 ? '' : 's'} pending`
-                : 'Offline — editing saved on this device'
-              : 'Offline — connect once to use this roster offline'}
-          </Text>
-        </View>
-      ) : null}
-      {isOnline && isSyncing ? (
-        <View style={styles.syncBanner}>
-          <Text style={styles.offlineBannerText}>
-            Syncing{pendingCount > 0 ? ` (${pendingCount} left)` : '…'}
-          </Text>
-        </View>
-      ) : null}
-      {isOnline && !isSyncing && pendingCount > 0 && !syncError ? (
-        <Pressable style={styles.syncBanner} onPress={retrySync}>
-          <Text style={styles.offlineBannerText}>
-            {pendingCount} change{pendingCount === 1 ? '' : 's'} waiting to
-            sync. Tap to sync now.
-          </Text>
-        </Pressable>
-      ) : null}
-      {isOnline && syncError ? (
-        <Pressable style={styles.syncErrorBanner} onPress={retrySync}>
-          <Text style={styles.offlineBannerText}>
-            Sync failed: {syncError}. Tap to retry.
-          </Text>
-        </Pressable>
-      ) : null}
+      {statusBanners}
     </View>
   );
 }
@@ -311,8 +487,73 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 20,
   },
+  phoneBar: {
+    paddingBottom: 10,
+    gap: 10,
+  },
+  phoneTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  phoneRoleRow: {
+    marginTop: -4,
+  },
+  phoneAccountBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    maxWidth: '52%',
+  },
+  phoneAccountBtnActive: {
+    borderColor: colors.primary,
+  },
+  phoneAccountText: {
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  phoneAccountChevron: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.muted,
+  },
+  phoneTabGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  phoneTab: {
+    flexGrow: 1,
+    flexBasis: '46%',
+    minHeight: 40,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  phoneTabWide: {
+    flexBasis: '100%',
+  },
+  phoneTabText: {
+    fontWeight: '700',
+    color: colors.text,
+    fontSize: 13,
+  },
   offlineBanner: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: '#e2e8f0',
     borderTopWidth: 1,
@@ -320,7 +561,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   syncBanner: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: '#dbeafe',
     borderTopWidth: 1,
@@ -328,7 +569,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   syncErrorBanner: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingVertical: 8,
     backgroundColor: colors.dangerBg,
     borderTopWidth: 1,
@@ -364,9 +605,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   dashboard: {
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    minHeight: 44,
+    paddingVertical: 8,
+    paddingHorizontal: 2,
+    minHeight: 40,
     justifyContent: 'center',
   },
   dashboardText: {
