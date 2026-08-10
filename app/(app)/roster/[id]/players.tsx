@@ -226,7 +226,7 @@ export default function AllPlayersScreen() {
                   router.push(`/roster/${rosterId}/import`);
                 }}
               >
-                <Text style={styles.moreText}>Import spreadsheet</Text>
+                <Text style={styles.moreText}>Import</Text>
               </Pressable>
               <Pressable
                 style={[

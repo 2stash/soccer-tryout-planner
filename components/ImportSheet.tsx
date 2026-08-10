@@ -19,10 +19,14 @@ import {
   parseSpreadsheetBuffer,
   type ImportParseResult,
 } from '@/lib/importSpreadsheet';
+import {
+  buildImportPreviewRows,
+  mergeImportParseResults,
+} from '@/lib/importPreview';
 import { parseRosterPhotoText } from '@/lib/parseRosterPhoto';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
+import { useRosterData } from '@/lib/RosterDataContext';
 import { bulkInsertPlayers } from '@/lib/players';
-import { formatPositionsShort } from '@/lib/positions';
 import { colors } from '@/constants/theme';
 
 type Props = {
@@ -33,12 +37,29 @@ type Props = {
 // Show on iOS device builds; OCR module may report support only after native link.
 const canScanPhoto = Platform.OS === 'ios';
 
+function askTakeAnotherPhoto(): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert('Add another photo?', 'Scan another page of the roster list.', [
+      { text: 'Done', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Take another', onPress: () => resolve(true) },
+    ]);
+  });
+}
+
 export function ImportSheet({ rosterId, onImported }: Props) {
   const { activeWorkspaceId } = useActiveRole();
+  const { players } = useRosterData();
   const [result, setResult] = useState<ImportParseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<string | null>(null);
+
+  const previewRows = result
+    ? buildImportPreviewRows(result.rows, players)
+    : [];
+  const newRows = previewRows.filter((row) => !row.isDuplicate);
+  const duplicateCount = previewRows.length - newRows.length;
 
   async function pickFile() {
     try {
@@ -65,23 +86,34 @@ export function ImportSheet({ rosterId, onImported }: Props) {
     }
   }
 
-  async function processPhotoUri(uri: string) {
+  async function processPhotoUris(uris: string[]) {
     if (!isOcrSupported) {
       setError(
         'Photo scan needs a native iOS build (TestFlight). It is not available in Expo Go.'
       );
       return;
     }
+    if (uris.length === 0) return;
+
     setScanning(true);
     setError(null);
     try {
-      const texts = await extractTextFromImage(uri);
-      const parsed = parseRosterPhotoText(texts);
+      const parts: ImportParseResult[] = [];
+      for (let i = 0; i < uris.length; i++) {
+        setScanProgress(
+          uris.length === 1
+            ? 'Reading photo…'
+            : `Reading photo ${i + 1} of ${uris.length}…`
+        );
+        const texts = await extractTextFromImage(uris[i]);
+        parts.push(parseRosterPhotoText(texts));
+      }
+      const parsed = mergeImportParseResults(parts);
       setResult(parsed);
       if (parsed.rows.length === 0) {
         setError(
           parsed.errors[0]?.message ??
-            'No players found in this photo. Try a clearer shot of the name and class columns.'
+            'No players found in these photos. Try clearer shots of the name and class columns.'
         );
       }
     } catch (e) {
@@ -89,25 +121,35 @@ export function ImportSheet({ rosterId, onImported }: Props) {
       setResult(null);
     } finally {
       setScanning(false);
+      setScanProgress(null);
     }
   }
 
-  async function takePhoto() {
+  async function takePhotos() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
       setError('Camera permission is required to photograph a roster list.');
       return;
     }
-    const picked = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['images'],
-      quality: 1,
-      allowsEditing: false,
-    });
-    if (picked.canceled || !picked.assets?.[0]?.uri) return;
-    await processPhotoUri(picked.assets[0].uri);
+
+    const uris: string[] = [];
+    while (true) {
+      const picked = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 1,
+        allowsEditing: false,
+      });
+      if (picked.canceled || !picked.assets?.[0]?.uri) break;
+      uris.push(picked.assets[0].uri);
+      const more = await askTakeAnotherPhoto();
+      if (!more) break;
+    }
+
+    if (uris.length === 0) return;
+    await processPhotoUris(uris);
   }
 
-  async function choosePhoto() {
+  async function choosePhotos() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       setError('Photo library permission is required to import from a picture.');
@@ -117,9 +159,11 @@ export function ImportSheet({ rosterId, onImported }: Props) {
       mediaTypes: ['images'],
       quality: 1,
       allowsEditing: false,
+      allowsMultipleSelection: true,
+      selectionLimit: 0,
     });
-    if (picked.canceled || !picked.assets?.[0]?.uri) return;
-    await processPhotoUri(picked.assets[0].uri);
+    if (picked.canceled || !picked.assets?.length) return;
+    await processPhotoUris(picked.assets.map((a) => a.uri));
   }
 
   function openScanMenu() {
@@ -127,25 +171,25 @@ export function ImportSheet({ rosterId, onImported }: Props) {
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ['Cancel', 'Take photo', 'Choose from library'],
+          options: ['Cancel', 'Take photos', 'Choose from library'],
           cancelButtonIndex: 0,
         },
         (buttonIndex) => {
-          if (buttonIndex === 1) void takePhoto();
-          if (buttonIndex === 2) void choosePhoto();
+          if (buttonIndex === 1) void takePhotos();
+          if (buttonIndex === 2) void choosePhotos();
         }
       );
       return;
     }
-    Alert.alert('Scan photo', 'Import players from a roster picture.', [
+    Alert.alert('Scan photo', 'Import players from roster pictures.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Take photo', onPress: () => void takePhoto() },
-      { text: 'Choose from library', onPress: () => void choosePhoto() },
+      { text: 'Take photos', onPress: () => void takePhotos() },
+      { text: 'Choose from library', onPress: () => void choosePhotos() },
     ]);
   }
 
   async function confirmImport() {
-    if (!result || result.rows.length === 0) return;
+    if (newRows.length === 0) return;
     if (!activeWorkspaceId) {
       setError('No active workspace for this role.');
       return;
@@ -155,7 +199,23 @@ export function ImportSheet({ rosterId, onImported }: Props) {
     try {
       const inserted = await bulkInsertPlayers(
         rosterId,
-        result.rows,
+        newRows.map(
+          ({
+            first_name,
+            last_name,
+            school_year,
+            positions,
+            position_rank,
+            team_rank,
+          }) => ({
+            first_name,
+            last_name,
+            school_year,
+            positions,
+            position_rank,
+            team_rank,
+          })
+        ),
         activeWorkspaceId
       );
       onImported(inserted.length);
@@ -167,123 +227,172 @@ export function ImportSheet({ rosterId, onImported }: Props) {
     }
   }
 
+  const showImportBar = previewRows.length > 0;
+  const scanLabel = scanProgress ?? (scanning ? 'Reading photo…' : 'Scan photos');
+
   return (
     <View style={styles.wrap}>
-      <Text style={styles.help}>
-        Upload a `.xlsx` or `.csv` with a header row. Required columns:{' '}
-        <Text style={styles.mono}>first_name</Text>,{' '}
-        <Text style={styles.mono}>last_name</Text>. Optional:{' '}
-        <Text style={styles.mono}>school_year</Text>,{' '}
-        <Text style={styles.mono}>positions</Text> (e.g.{' '}
-        <Text style={styles.mono}>9,10</Text> or <Text style={styles.mono}>ST,CAM</Text>
-        ), <Text style={styles.mono}>position_rank</Text>. Available order is set
-        by class (Sr→Fr) then name after import.
-      </Text>
-
-      {canScanPhoto ? (
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={styles.help}>
-          On iPhone you can also photograph a printed list with{' '}
-          <Text style={styles.mono}>Last, First</Text> and class (
-          <Text style={styles.mono}>FR/SO/JR/SR</Text>) columns, then confirm the
-          preview before importing.
+          Upload a `.xlsx` or `.csv` with a header row. Required columns:{' '}
+          <Text style={styles.mono}>first_name</Text>,{' '}
+          <Text style={styles.mono}>last_name</Text>. Optional:{' '}
+          <Text style={styles.mono}>school_year</Text>. Names already on this
+          team are marked as duplicates and skipped on import.
         </Text>
-      ) : null}
 
-      <View style={styles.actions}>
-        <Pressable
-          style={[styles.primaryBtn, scanning && styles.disabled]}
-          disabled={scanning}
-          onPress={pickFile}
-        >
-          <Text style={styles.primaryText}>Choose spreadsheet</Text>
-        </Pressable>
         {canScanPhoto ? (
-          <Pressable
-            style={[styles.secondaryBtn, scanning && styles.disabled]}
-            disabled={scanning}
-            onPress={openScanMenu}
-          >
-            <Text style={styles.secondaryText}>
-              {scanning ? 'Reading photo…' : 'Scan photo'}
-            </Text>
-          </Pressable>
+          <Text style={styles.help}>
+            On iPhone you can photograph one or more pages of a printed{' '}
+            <Text style={styles.mono}>Last, First</Text> + class list, then
+            confirm the preview before importing.
+          </Text>
         ) : null}
-      </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      {result ? (
-        <View style={styles.preview}>
-          <Text style={styles.previewTitle}>Preview</Text>
-          <Text style={styles.meta}>
-            Headers found: {result.headersFound.join(', ') || '—'}
-          </Text>
-          <Text style={styles.meta}>
-            Valid rows: {result.rows.length} · Row errors: {result.errors.length}
-          </Text>
-
-          {result.errors.length > 0 ? (
-            <View style={styles.errorBox}>
-              {result.errors.slice(0, 8).map((err) => (
-                <Text key={`${err.row}-${err.message}`} style={styles.errorItem}>
-                  {err.row > 0 ? `Row ${err.row}: ` : ''}
-                  {err.message}
-                </Text>
-              ))}
-              {result.errors.length > 8 ? (
-                <Text style={styles.errorItem}>
-                  …and {result.errors.length - 8} more
-                </Text>
-              ) : null}
-            </View>
+        <View style={styles.actions}>
+          <Pressable
+            style={[styles.primaryBtn, scanning && styles.disabled]}
+            disabled={scanning}
+            onPress={pickFile}
+          >
+            <Text style={styles.primaryText}>Choose spreadsheet</Text>
+          </Pressable>
+          {canScanPhoto ? (
+            <Pressable
+              style={[styles.secondaryBtn, scanning && styles.disabled]}
+              disabled={scanning}
+              onPress={openScanMenu}
+            >
+              <Text style={styles.secondaryText}>{scanLabel}</Text>
+            </Pressable>
           ) : null}
+        </View>
 
-          {result.rows.length > 0 ? (
-            <ScrollView horizontal style={styles.tableScroll}>
-              <View>
-                <View style={[styles.row, styles.headerRow]}>
-                  {['First', 'Last', 'Year', 'Pos', 'Pos #', 'Team #'].map((h) => (
-                    <Text key={h} style={[styles.cell, styles.headerCell]}>
-                      {h}
-                    </Text>
-                  ))}
-                </View>
-                {result.rows.slice(0, 40).map((row, idx) => (
-                  <View
-                    key={`${row.first_name}-${row.last_name}-${idx}`}
-                    style={styles.row}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        {result ? (
+          <View style={styles.preview}>
+            <Text style={styles.previewTitle}>Preview</Text>
+            <Text style={styles.meta}>
+              {newRows.length} new · {duplicateCount} duplicate
+              {duplicateCount === 1 ? '' : 's'} · {result.errors.length} row
+              error{result.errors.length === 1 ? '' : 's'}
+            </Text>
+
+            {result.errors.length > 0 ? (
+              <View style={styles.errorBox}>
+                {result.errors.slice(0, 8).map((err) => (
+                  <Text
+                    key={`${err.row}-${err.message}`}
+                    style={styles.errorItem}
                   >
-                    <Text style={styles.cell}>{row.first_name}</Text>
-                    <Text style={styles.cell}>{row.last_name}</Text>
-                    <Text style={styles.cell}>{row.school_year || '—'}</Text>
-                    <Text style={styles.cell}>
-                      {formatPositionsShort(row.positions) || '—'}
-                    </Text>
-                    <Text style={styles.cell}>{row.position_rank ?? '—'}</Text>
-                    <Text style={styles.cell}>{row.team_rank ?? '—'}</Text>
-                  </View>
+                    {err.row > 0 ? `Row ${err.row}: ` : ''}
+                    {err.message}
+                  </Text>
                 ))}
-                {result.rows.length > 40 ? (
-                  <Text style={styles.meta}>
-                    …and {result.rows.length - 40} more in this import
+                {result.errors.length > 8 ? (
+                  <Text style={styles.errorItem}>
+                    …and {result.errors.length - 8} more
                   </Text>
                 ) : null}
               </View>
-            </ScrollView>
-          ) : null}
+            ) : null}
 
+            {previewRows.length > 0 ? (
+              <View style={styles.table}>
+                <View style={[styles.row, styles.headerRow]}>
+                  <Text
+                    style={[styles.cell, styles.cellFirst, styles.headerCell]}
+                  >
+                    First
+                  </Text>
+                  <Text
+                    style={[styles.cell, styles.cellLast, styles.headerCell]}
+                  >
+                    Last
+                  </Text>
+                  <Text
+                    style={[styles.cell, styles.cellYear, styles.headerCell]}
+                  >
+                    Year
+                  </Text>
+                  <Text
+                    style={[styles.cell, styles.cellStatus, styles.headerCell]}
+                  >
+                    Status
+                  </Text>
+                </View>
+                {previewRows.map((row, idx) => (
+                  <View
+                    key={`${row.first_name}-${row.last_name}-${idx}`}
+                    style={[styles.row, row.isDuplicate && styles.rowDuplicate]}
+                  >
+                    <Text
+                      style={[
+                        styles.cell,
+                        styles.cellFirst,
+                        row.isDuplicate && styles.cellMuted,
+                      ]}
+                    >
+                      {row.first_name}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.cell,
+                        styles.cellLast,
+                        row.isDuplicate && styles.cellMuted,
+                      ]}
+                    >
+                      {row.last_name}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.cell,
+                        styles.cellYear,
+                        row.isDuplicate && styles.cellMuted,
+                      ]}
+                    >
+                      {row.school_year || '—'}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.cell,
+                        styles.cellStatus,
+                        row.isDuplicate ? styles.statusDup : styles.statusNew,
+                      ]}
+                    >
+                      {row.isDuplicate ? 'Duplicate' : 'New'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </ScrollView>
+
+      {showImportBar ? (
+        <View style={styles.footer}>
           <Pressable
             style={[
-              styles.primaryBtn,
-              (importing || result.rows.length === 0) && styles.disabled,
+              styles.importBtn,
+              (importing || newRows.length === 0) && styles.disabled,
             ]}
-            disabled={importing || result.rows.length === 0}
+            disabled={importing || newRows.length === 0}
             onPress={confirmImport}
           >
             <Text style={styles.primaryText}>
               {importing
                 ? 'Importing…'
-                : `Import ${result.rows.length} player${result.rows.length === 1 ? '' : 's'}`}
+                : newRows.length === 0
+                  ? 'No new players to import'
+                  : `Import ${newRows.length} new player${
+                      newRows.length === 1 ? '' : 's'
+                    }`}
             </Text>
           </Pressable>
         </View>
@@ -294,9 +403,17 @@ export function ImportSheet({ rosterId, onImported }: Props) {
 
 const styles = StyleSheet.create({
   wrap: {
-    gap: 14,
+    flex: 1,
     maxWidth: 720,
     width: '100%',
+    alignSelf: 'stretch',
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    gap: 14,
+    paddingBottom: 24,
   },
   help: {
     color: colors.muted,
@@ -368,28 +485,74 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 13,
   },
-  tableScroll: {
-    maxHeight: 280,
+  table: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    overflow: 'hidden',
   },
   row: {
     flexDirection: 'row',
+    alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
+  rowDuplicate: {
+    backgroundColor: '#f3f4f6',
+  },
   headerRow: {
     backgroundColor: '#e8eef3',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   cell: {
-    width: 100,
     paddingVertical: 8,
     paddingHorizontal: 6,
-    fontSize: 13,
+    fontSize: 14,
     color: colors.text,
+  },
+  cellMuted: {
+    color: colors.muted,
+  },
+  cellFirst: {
+    flex: 1.05,
+  },
+  cellLast: {
+    flex: 1.15,
+  },
+  cellYear: {
+    flex: 0.65,
+  },
+  cellStatus: {
+    flex: 0.95,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statusNew: {
+    color: colors.primary,
+  },
+  statusDup: {
+    color: colors.muted,
   },
   headerCell: {
     fontWeight: '700',
     color: colors.muted,
     fontSize: 12,
     textTransform: 'uppercase',
+  },
+  footer: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 4,
+    backgroundColor: colors.bg,
+  },
+  importBtn: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 8,
   },
 });

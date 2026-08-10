@@ -33,16 +33,18 @@ export default function ImportPlayersScreen() {
           spreadsheet.
         </Text>
       ) : (
-        <ImportSheet
-          rosterId={id}
-          onImported={() => {
-            if (router.canGoBack()) {
-              router.back();
-              return;
-            }
-            router.replace(`/roster/${id}`);
-          }}
-        />
+        <View style={styles.sheet}>
+          <ImportSheet
+            rosterId={id}
+            onImported={() => {
+              if (router.canGoBack()) {
+                router.back();
+                return;
+              }
+              router.replace(`/roster/${id}`);
+            }}
+          />
+        </View>
       )}
     </View>
   );
@@ -53,6 +55,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
     padding: 20,
+    paddingBottom: 8,
     gap: 10,
   },
   heading: {
@@ -62,7 +65,10 @@ const styles = StyleSheet.create({
   },
   sub: {
     color: colors.muted,
-    marginBottom: 8,
+  },
+  sheet: {
+    flex: 1,
+    minHeight: 0,
   },
   offlineNote: {
     color: colors.danger,
