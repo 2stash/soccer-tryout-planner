@@ -114,6 +114,15 @@ type OfflineOpBody =
       type: 'adminLiveRemoveFromTeam';
       playerId: string;
       squadTeam: SquadTeam;
+    }
+  | {
+      type: 'upsertTryoutDay';
+      playerId: string;
+      day: number;
+      tryoutNumber?: number | null;
+      attended?: boolean;
+      /** When setting a number, prepopulate later null days through this count. */
+      dayCount?: number;
     };
 
 export type OfflineOp = OfflineOpBase & OfflineOpBody;

@@ -57,6 +57,8 @@ export async function listPendingInvitesForEmail(): Promise<
       name: row.roster_name,
       owner_id: row.roster_owner_id,
       created_at: row.roster_created_at,
+      tryout_active: false,
+      tryout_day_count: null,
     },
   }));
 }

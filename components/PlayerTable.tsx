@@ -18,6 +18,8 @@ import type { SquadPlayerSection } from '@/lib/squadSections';
 import { YearSelect } from '@/components/YearSelect';
 import { PositionSelect } from '@/components/PositionSelect';
 import { SquadSelect } from '@/components/SquadSelect';
+import { useRosterData } from '@/lib/RosterDataContext';
+import { playerAttendedAnyTryout } from '@/lib/tryout';
 import { colors } from '@/constants/theme';
 
 const SQUAD_COL_FLEX = 1;
@@ -451,6 +453,9 @@ function EditableRow({
   canMoveDown?: boolean;
   onMoveSub?: (direction: 'up' | 'down') => void | Promise<void>;
 }) {
+  const { roster } = useRosterData();
+  const present =
+    Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
   const isStarter = isStarterRole(role);
   const [draft, setDraft] = useState(() => toDraft(player));
   const baselineRef = useRef(toDraft(player));
@@ -567,6 +572,7 @@ function EditableRow({
         style={[
           styles.row,
           isStarter && styles.starterRow,
+          present && styles.presentRow,
           (saving || deleting || assigning || moving) && styles.rowBusy,
         ]}
       >
@@ -714,6 +720,11 @@ const styles = StyleSheet.create({
   },
   starterRow: {
     backgroundColor: '#e8f5ef',
+  },
+  presentRow: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   placeholderRow: {
     backgroundColor: '#f3f5f7',

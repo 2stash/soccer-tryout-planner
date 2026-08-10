@@ -9,6 +9,17 @@ export type Roster = {
   name: string;
   owner_id: string;
   created_at: string;
+  /** True while Hold Tryouts is active (Tryout tab visible). */
+  tryout_active: boolean;
+  /** Configured tryout length 1–5; kept after End tryout. */
+  tryout_day_count: number | null;
+};
+
+/** Per-day tryout bib number + attendance for one player. */
+export type PlayerTryoutDay = {
+  day: number;
+  tryout_number: number | null;
+  attended: boolean;
 };
 
 /** Membership roles on a tryout roster (one user may hold several). */
@@ -121,6 +132,8 @@ export type Player = {
   /** Starred in Available/Unavailable — locked to the top band of that pool. */
   available_pinned: boolean;
   squad_team: PlayerAssignment | null;
+  /** Per-day tryout numbers / attendance (empty when unused). */
+  tryout_days: PlayerTryoutDay[];
   created_at: string;
   updated_at: string;
 };

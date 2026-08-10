@@ -41,6 +41,7 @@ import {
   countBySchoolYear,
   formatClassCounts,
 } from '@/lib/schoolYear';
+import { playerAttendedAnyTryout } from '@/lib/tryout';
 import { colors, layout } from '@/constants/theme';
 
 type PoolKey = RankPool | SquadTeam;
@@ -534,6 +535,9 @@ export default function AssignSquadsScreen() {
       ? index < lastPinnedIdx
       : index < total - 1;
 
+    const present =
+      Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
+
     return (
       <View
         key={player.id}
@@ -542,6 +546,7 @@ export default function AssignSquadsScreen() {
           stacked && styles.stackedRow,
           pinned && styles.rowPinned,
           index % 2 === 1 && !pinned && styles.rowAlt,
+          present && styles.rowPresent,
           busy && styles.rowBusy,
         ]}
       >
@@ -622,6 +627,8 @@ export default function AssignSquadsScreen() {
     const meta = playerMeta(player);
     const busy = busyId === player.id;
     const stacked = isPhone || tightTeamRows;
+    const present =
+      Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
     return (
       <View
         key={player.id}
@@ -629,6 +636,7 @@ export default function AssignSquadsScreen() {
           styles.row,
           stacked && styles.stackedRow,
           index % 2 === 1 && styles.rowAlt,
+          present && styles.rowPresent,
           busy && styles.rowBusy,
         ]}
       >
@@ -1314,6 +1322,11 @@ const styles = StyleSheet.create({
   },
   rowPinned: {
     backgroundColor: '#fff8e8',
+  },
+  rowPresent: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   rowBusy: {
     opacity: 0.55,

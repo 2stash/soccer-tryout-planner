@@ -15,6 +15,8 @@ import {
   type StarterDisplaySlot,
 } from '@/lib/positions';
 import type { SquadPlayerSection, SquadSectionRow } from '@/lib/squadSections';
+import { useRosterData } from '@/lib/RosterDataContext';
+import { playerAttendedAnyTryout } from '@/lib/tryout';
 import { colors, layout } from '@/constants/theme';
 
 export type StarterSlotPress = {
@@ -173,6 +175,9 @@ function AvailableRankRow({
   addActions: { key: string; label: string; onPress: () => void }[];
   onPress?: () => void;
 }) {
+  const { roster } = useRosterData();
+  const present =
+    Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
   const pos = formatPositionsShort(player.positions);
   const meta = [player.school_year, pos].filter(Boolean).join(' · ');
 
@@ -182,6 +187,7 @@ function AvailableRankRow({
         styles.availRow,
         index % 2 === 1 && !pinned && styles.availRowAlt,
         pinned && styles.availRowPinned,
+        present && styles.availRowPresent,
       ]}
     >
       <View style={styles.availRankCol}>
@@ -346,9 +352,12 @@ function PlayerCard({
     );
   }
 
+  const { roster } = useRosterData();
   const player = row.player;
   const starter = isStarterRole(row.role);
   const conflict = Boolean(row.conflict);
+  const present =
+    Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
   const also = row.alsoLabels?.length
     ? `Also ${row.alsoLabels.join(', ')}`
     : null;
@@ -360,6 +369,7 @@ function PlayerCard({
         styles.card,
         (showMove || showStarterActions) && styles.cardWithMove,
         starter && styles.starterCard,
+        present && styles.presentCard,
         conflict && styles.conflictCard,
         sizeStyle,
       ]}
@@ -1014,6 +1024,11 @@ const styles = StyleSheet.create({
   availRowPinned: {
     backgroundColor: colors.warningBg,
   },
+  availRowPresent: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+  },
   availRankCol: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1200,6 +1215,11 @@ const styles = StyleSheet.create({
   starterCard: {
     backgroundColor: '#e8f5ef',
     borderColor: '#c5e4d4',
+  },
+  presentCard: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   conflictCard: {
     backgroundColor: colors.warningBg,

@@ -34,6 +34,7 @@ import {
   countBySchoolYear,
   schoolYearSortKey,
 } from '@/lib/schoolYear';
+import { playerAttendedAnyTryout } from '@/lib/tryout';
 import type { Player, PlayerAssignment, PlayerInput } from '@/lib/types';
 import { SQUAD_TEAMS, UNAVAILABLE_POOL } from '@/lib/types';
 import { colors, layout } from '@/constants/theme';
@@ -392,10 +393,17 @@ export default function AllPlayersScreen() {
               ) : (
                 cardPlayers.map((player, index) => {
                   const meta = playerMetaLine(player, gradeFilter !== 'all');
+                  const present =
+                    Boolean(roster?.tryout_active) &&
+                    playerAttendedAnyTryout(player);
                   return (
                     <Pressable
                       key={player.id}
-                      style={[styles.card, index % 2 === 1 && styles.cardAlt]}
+                      style={[
+                        styles.card,
+                        index % 2 === 1 && styles.cardAlt,
+                        present && styles.cardPresent,
+                      ]}
                       onPress={() => setEditing(player)}
                     >
                       <Text style={styles.cardName} numberOfLines={1}>
@@ -635,6 +643,11 @@ const styles = StyleSheet.create({
   },
   cardAlt: {
     backgroundColor: '#f7f9fb',
+  },
+  cardPresent: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   cardName: {
     color: colors.text,

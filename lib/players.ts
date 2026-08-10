@@ -1,11 +1,17 @@
 import { supabase } from '@/lib/supabase';
-import type { Player, PlayerAssignment, PlayerInput } from '@/lib/types';
+import type {
+  Player,
+  PlayerAssignment,
+  PlayerInput,
+  PlayerTryoutDay,
+} from '@/lib/types';
 import {
   formatPositionsShort,
   normalizePositions,
   sortPositionNumbers,
 } from '@/lib/positions';
 import { planAvailableRanksAfterImport } from '@/lib/availableRank';
+import { listTryoutDaysForPlayers } from '@/lib/tryout';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 type AssignmentRow = {
@@ -17,7 +23,8 @@ type AssignmentRow = {
 
 function mapPlayer(
   row: Record<string, unknown>,
-  assignment?: AssignmentRow | null
+  assignment?: AssignmentRow | null,
+  tryoutDays: PlayerTryoutDay[] = []
 ): Player {
   const positions = normalizePositions(row.positions);
   return {
@@ -35,6 +42,7 @@ function mapPlayer(
     team_rank: assignment?.team_rank ?? null,
     available_pinned: Boolean(assignment?.available_pinned),
     squad_team: assignment?.squad_team ?? null,
+    tryout_days: tryoutDays,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
@@ -138,12 +146,18 @@ export async function listPlayers(
   ]);
 
   if (error) throw error;
-  return (data ?? []).map((row) =>
-    mapPlayer(
-      row as Record<string, unknown>,
-      assignments.get((row as { id: string }).id)
-    )
+  const rows = data ?? [];
+  const tryoutByPlayer = await listTryoutDaysForPlayers(
+    rows.map((row) => (row as { id: string }).id)
   );
+  return rows.map((row) => {
+    const id = (row as { id: string }).id;
+    return mapPlayer(
+      row as Record<string, unknown>,
+      assignments.get(id),
+      tryoutByPlayer.get(id) ?? []
+    );
+  });
 }
 
 export async function getPlayer(
@@ -456,6 +470,25 @@ export function subscribeToPlayers(
         schema: 'public',
         table: 'player_assignments',
         filter: `workspace_id=eq.${workspaceId}`,
+      },
+      () => onChange()
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'player_tryout_days',
+      },
+      () => onChange()
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'rosters',
+        filter: `id=eq.${rosterId}`,
       },
       () => onChange()
     )

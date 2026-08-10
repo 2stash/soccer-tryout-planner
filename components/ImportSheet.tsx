@@ -12,10 +12,6 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import {
-  extractTextFromImage,
-  isSupported as isOcrSupported,
-} from 'expo-text-extractor';
-import {
   parseSpreadsheetBuffer,
   type ImportParseResult,
 } from '@/lib/importSpreadsheet';
@@ -23,6 +19,7 @@ import {
   buildImportPreviewRows,
   mergeImportParseResults,
 } from '@/lib/importPreview';
+import { extractTextFromImage, isOcrAvailable } from '@/lib/ocr';
 import { parseRosterPhotoText } from '@/lib/parseRosterPhoto';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useRosterData } from '@/lib/RosterDataContext';
@@ -34,8 +31,8 @@ type Props = {
   onImported: (count: number) => void;
 };
 
-// Show on iOS device builds; OCR module may report support only after native link.
-const canScanPhoto = Platform.OS === 'ios';
+/** Only show Scan photo when the native OCR module is actually linked. */
+const canScanPhoto = isOcrAvailable();
 
 function askTakeAnotherPhoto(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -87,9 +84,9 @@ export function ImportSheet({ rosterId, onImported }: Props) {
   }
 
   async function processPhotoUris(uris: string[]) {
-    if (!isOcrSupported) {
+    if (!isOcrAvailable()) {
       setError(
-        'Photo scan needs a native iOS build (TestFlight). It is not available in Expo Go.'
+        'Photo scan needs a newer iOS build with OCR (rebuild via EAS). Spreadsheet import still works.'
       );
       return;
     }

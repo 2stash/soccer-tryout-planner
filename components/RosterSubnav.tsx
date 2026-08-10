@@ -8,13 +8,17 @@ import {
   Text,
   View,
 } from 'react-native';
-import { router, usePathname } from 'expo-router';
+import { router, usePathname, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { HoldTryoutModal } from '@/components/HoldTryoutModal';
 import { RoleSwitcher } from '@/components/RoleSwitcher';
 import { useActiveRole } from '@/lib/ActiveRoleContext';
 import { useAuth } from '@/lib/AuthContext';
+import { confirmAction } from '@/lib/confirm';
 import { useLayout } from '@/lib/layout';
+import { alertRequiresOnline } from '@/lib/offline/gate';
 import { useOffline } from '@/lib/offline/OfflineContext';
+import { useRosterData } from '@/lib/RosterDataContext';
 import { colors } from '@/constants/theme';
 
 type Props = {
@@ -27,6 +31,7 @@ type MainTab =
   | 'depth'
   | 'assign'
   | 'players'
+  | 'tryout'
   | 'print'
   | 'team';
 
@@ -34,7 +39,7 @@ type NavTab = {
   key: Exclude<MainTab, 'print' | 'team'>;
   label: string;
   shortLabel: string;
-  href: string;
+  href: Href;
 };
 
 function userLabel(email: string | undefined) {
@@ -49,6 +54,7 @@ function mainTabFromPath(pathname: string): MainTab | null {
   if (pathname.includes('/add') || pathname.includes('/import')) return null;
   if (pathname.includes('/assign')) return 'assign';
   if (pathname.includes('/players')) return 'players';
+  if (pathname.includes('/tryout')) return 'tryout';
   if (pathname.includes('/depth')) return 'depth';
   if (pathname.includes('/rosters') || pathname.includes('/planner')) {
     return 'print';
@@ -63,6 +69,7 @@ export function RosterSubnav({ rosterId }: Props) {
   const { isPhone, isTablet } = useLayout();
   const { user, signOut } = useAuth();
   const { isAdmin } = useActiveRole();
+  const { roster, startTryout, endTryout } = useRosterData();
   const {
     isOnline,
     isSyncing,
@@ -73,11 +80,15 @@ export function RosterSubnav({ rosterId }: Props) {
   } = useOffline();
   const [printMenuOpen, setPrintMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [holdOpen, setHoldOpen] = useState(false);
+  const [holdBusy, setHoldBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<MainTab>(
     () => mainTabFromPath(pathname) ?? 'positions'
   );
+  const tryoutActive = Boolean(roster?.tryout_active);
   const onAssign = activeTab === 'assign';
   const onAllPlayers = activeTab === 'players';
+  const onTryout = activeTab === 'tryout';
   const onPlanner = pathname.includes('/planner');
   const onDepth = activeTab === 'depth';
   const onRosters = pathname.includes('/rosters');
@@ -90,26 +101,36 @@ export function RosterSubnav({ rosterId }: Props) {
       key: 'positions',
       label: 'Assign Positions',
       shortLabel: 'Positions',
-      href: `/roster/${rosterId}`,
+      href: `/roster/${rosterId}` as Href,
     },
     {
       key: 'depth',
       label: 'Depth Chart',
       shortLabel: 'Depth',
-      href: `/roster/${rosterId}/depth`,
+      href: `/roster/${rosterId}/depth` as Href,
     },
     {
       key: 'assign',
       label: 'Assign Squads',
       shortLabel: 'Squads',
-      href: `/roster/${rosterId}/assign`,
+      href: `/roster/${rosterId}/assign` as Href,
     },
     {
       key: 'players',
       label: 'All Players',
       shortLabel: 'Players',
-      href: `/roster/${rosterId}/players`,
+      href: `/roster/${rosterId}/players` as Href,
     },
+    ...(tryoutActive
+      ? [
+          {
+            key: 'tryout' as const,
+            label: 'Tryout',
+            shortLabel: 'Tryout',
+            href: `/roster/${rosterId}/tryout` as Href,
+          },
+        ]
+      : []),
   ];
 
   useEffect(() => {
@@ -134,6 +155,54 @@ export function RosterSubnav({ rosterId }: Props) {
   function goTeamInvites() {
     setAccountMenuOpen(false);
     router.replace(`/roster/${rosterId}/team`);
+  }
+
+  function openHoldTryouts() {
+    setAccountMenuOpen(false);
+    if (!isOnline) {
+      alertRequiresOnline('Hold tryouts');
+      return;
+    }
+    setHoldOpen(true);
+  }
+
+  function confirmEndTryout() {
+    setAccountMenuOpen(false);
+    if (!isOnline) {
+      alertRequiresOnline('End tryout');
+      return;
+    }
+    confirmAction({
+      title: 'End tryout?',
+      message:
+        'Lock in teams and begin season. The Tryout tab will be removed; attendance and tryout numbers are kept.',
+      confirmLabel: 'End tryout',
+      onConfirm: () => {
+        void (async () => {
+          try {
+            await endTryout();
+            if (pathname.includes('/tryout')) {
+              router.replace(`/roster/${rosterId}/players`);
+            }
+          } catch {
+            // Error surfaced via RosterDataContext
+          }
+        })();
+      },
+    });
+  }
+
+  async function handleBeginTryout(dayCount: number) {
+    setHoldBusy(true);
+    try {
+      await startTryout(dayCount);
+      setHoldOpen(false);
+      router.replace(`/roster/${rosterId}/tryout`);
+    } catch {
+      // Error surfaced via RosterDataContext
+    } finally {
+      setHoldBusy(false);
+    }
   }
 
   function openPrintMenu() {
@@ -166,9 +235,10 @@ export function RosterSubnav({ rosterId }: Props) {
   function openAccountMenu() {
     setPrintMenuOpen(false);
     if (isPhone) {
-      const options = isAdmin
-        ? (['Cancel', 'Team / Invites', 'Sign out'] as const)
-        : (['Cancel', 'Sign out'] as const);
+      const adminOptions = tryoutActive
+        ? (['Cancel', 'Team / Invites', 'End tryout', 'Sign out'] as const)
+        : (['Cancel', 'Team / Invites', 'Hold Tryouts', 'Sign out'] as const);
+      const options = isAdmin ? adminOptions : (['Cancel', 'Sign out'] as const);
       if (Platform.OS === 'ios') {
         ActionSheetIOS.showActionSheetWithOptions(
           {
@@ -177,12 +247,16 @@ export function RosterSubnav({ rosterId }: Props) {
             destructiveButtonIndex: options.length - 1,
           },
           (buttonIndex) => {
-            if (isAdmin) {
-              if (buttonIndex === 1) goTeamInvites();
-              if (buttonIndex === 2) void handleSignOut();
-            } else if (buttonIndex === 1) {
-              void handleSignOut();
+            if (!isAdmin) {
+              if (buttonIndex === 1) void handleSignOut();
+              return;
             }
+            if (buttonIndex === 1) goTeamInvites();
+            if (buttonIndex === 2) {
+              if (tryoutActive) confirmEndTryout();
+              else openHoldTryouts();
+            }
+            if (buttonIndex === 3) void handleSignOut();
           }
         );
         return;
@@ -190,7 +264,19 @@ export function RosterSubnav({ rosterId }: Props) {
       Alert.alert('Account', userLabel(user?.email), [
         { text: 'Cancel', style: 'cancel' },
         ...(isAdmin
-          ? [{ text: 'Team / Invites', onPress: () => goTeamInvites() }]
+          ? [
+              { text: 'Team / Invites', onPress: () => goTeamInvites() },
+              tryoutActive
+                ? {
+                    text: 'End tryout',
+                    style: 'destructive' as const,
+                    onPress: () => confirmEndTryout(),
+                  }
+                : {
+                    text: 'Hold Tryouts',
+                    onPress: () => openHoldTryouts(),
+                  },
+            ]
           : []),
         {
           text: 'Sign out',
@@ -207,6 +293,7 @@ export function RosterSubnav({ rosterId }: Props) {
     if (key === 'positions') return onPositions;
     if (key === 'depth') return onDepth;
     if (key === 'assign') return onAssign;
+    if (key === 'tryout') return onTryout;
     return onAllPlayers;
   }
 
@@ -329,6 +416,14 @@ export function RosterSubnav({ rosterId }: Props) {
           </View>
         </View>
         {statusBanners}
+        <HoldTryoutModal
+          visible={holdOpen}
+          busy={holdBusy}
+          onCancel={() => {
+            if (!holdBusy) setHoldOpen(false);
+          }}
+          onBegin={handleBeginTryout}
+        />
       </View>
     );
   }
@@ -441,22 +536,41 @@ export function RosterSubnav({ rosterId }: Props) {
               {accountMenuOpen ? (
                 <View style={styles.accountMenu}>
                   {isAdmin ? (
-                    <Pressable
-                      style={[
-                        styles.accountItem,
-                        onTeam && styles.accountItemActive,
-                      ]}
-                      onPress={goTeamInvites}
-                    >
-                      <Text
+                    <>
+                      <Pressable
                         style={[
-                          styles.accountItemText,
-                          onTeam && styles.accountItemTextActive,
+                          styles.accountItem,
+                          onTeam && styles.accountItemActive,
                         ]}
+                        onPress={goTeamInvites}
                       >
-                        Team / Invites
-                      </Text>
-                    </Pressable>
+                        <Text
+                          style={[
+                            styles.accountItemText,
+                            onTeam && styles.accountItemTextActive,
+                          ]}
+                        >
+                          Team / Invites
+                        </Text>
+                      </Pressable>
+                      {tryoutActive ? (
+                        <Pressable
+                          style={styles.accountItem}
+                          onPress={confirmEndTryout}
+                        >
+                          <Text style={styles.accountItemText}>End tryout</Text>
+                        </Pressable>
+                      ) : (
+                        <Pressable
+                          style={styles.accountItem}
+                          onPress={openHoldTryouts}
+                        >
+                          <Text style={styles.accountItemText}>
+                            Hold Tryouts
+                          </Text>
+                        </Pressable>
+                      )}
+                    </>
                   ) : null}
                   <Pressable
                     style={styles.accountItem}
@@ -471,6 +585,14 @@ export function RosterSubnav({ rosterId }: Props) {
         </View>
       </View>
       {statusBanners}
+      <HoldTryoutModal
+        visible={holdOpen}
+        busy={holdBusy}
+        onCancel={() => {
+          if (!holdBusy) setHoldOpen(false);
+        }}
+        onBegin={handleBeginTryout}
+      />
     </View>
   );
 }

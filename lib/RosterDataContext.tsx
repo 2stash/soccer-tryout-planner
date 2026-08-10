@@ -49,6 +49,13 @@ import {
 } from '@/lib/positions';
 import { getRoster } from '@/lib/rosters';
 import {
+  endTryout as endTryoutApi,
+  setTryoutNumberWithPrepopulate,
+  startTryout as startTryoutApi,
+  upsertTryoutDay,
+} from '@/lib/tryout';
+import type { PlayerTryoutDay } from '@/lib/types';
+import {
   membershipKey,
   optimisticApplyStarterSwap,
   optimisticPatchPositions,
@@ -158,6 +165,22 @@ type RosterDataValue = {
   }) => Promise<void>;
   /** Reset unpinned players in a ranked pool to class then name. */
   resetAvailableOrder: (pool?: RankPool) => Promise<void>;
+  /** Admin: enable Tryout mode for 1–5 days. */
+  startTryout: (dayCount: number) => Promise<void>;
+  /** Admin: leave Tryout mode (keeps attendance / numbers). */
+  endTryout: () => Promise<void>;
+  /** Set tryout # for a day (prepopulates later empty days). */
+  setTryoutNumber: (
+    playerId: string,
+    day: number,
+    tryoutNumber: number | null
+  ) => Promise<void>;
+  /** Toggle / set attendance for a tryout day. */
+  setTryoutAttended: (
+    playerId: string,
+    day: number,
+    attended: boolean
+  ) => Promise<void>;
 };
 
 const RosterDataContext = createContext<RosterDataValue | null>(null);
@@ -745,7 +768,14 @@ export function RosterDataProvider({
           .current(opts?.force ? { force: true } : undefined)
           .catch(() => {});
 
-        const nextPlayers = await listPlayers(id, workspaceId);
+        const [nextPlayers, nextRoster] = await Promise.all([
+          listPlayers(id, workspaceId),
+          getRoster(id),
+        ]);
+        if (nextRoster) {
+          setRoster(nextRoster);
+          rosterRef.current = nextRoster;
+        }
 
         const nextKey = membershipKey(nextPlayers);
         const membershipChanged = nextKey !== membershipRef.current;
@@ -1902,6 +1932,165 @@ export function RosterDataProvider({
     [applyAvailablePlan, queueAbsoluteRanks, persistSnapshot]
   );
 
+  function mergeTryoutDaysLocal(
+    playerId: string,
+    days: PlayerTryoutDay[]
+  ) {
+    const next = playersRef.current.map((p) => {
+      if (p.id !== playerId) return p;
+      const byDay = new Map(
+        (p.tryout_days ?? []).map((d) => [d.day, d] as const)
+      );
+      for (const day of days) byDay.set(day.day, day);
+      return {
+        ...p,
+        tryout_days: [...byDay.values()].sort((a, b) => a.day - b.day),
+      };
+    });
+    setPlayers(next);
+    playersRef.current = next;
+  }
+
+  const startTryout = useCallback(
+    async (dayCount: number) => {
+      setError(null);
+      try {
+        const updated = await startTryoutApi(rosterId, dayCount);
+        setRoster(updated);
+        rosterRef.current = updated;
+        muteRealtimeBriefly();
+        void persistSnapshot();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to start tryout');
+        throw e;
+      }
+    },
+    [rosterId, persistSnapshot]
+  );
+
+  const endTryout = useCallback(async () => {
+    setError(null);
+    try {
+      const updated = await endTryoutApi(rosterId);
+      setRoster(updated);
+      rosterRef.current = updated;
+      muteRealtimeBriefly();
+      void persistSnapshot();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to end tryout');
+      throw e;
+    }
+  }, [rosterId, persistSnapshot]);
+
+  const setTryoutNumber = useCallback(
+    async (
+      playerId: string,
+      day: number,
+      tryoutNumber: number | null
+    ) => {
+      const dayCount = rosterRef.current?.tryout_day_count ?? day;
+      setError(null);
+
+      if (
+        await queueIfNeeded({
+          type: 'upsertTryoutDay',
+          playerId,
+          day,
+          tryoutNumber,
+          dayCount,
+        })
+      ) {
+        const localDays: PlayerTryoutDay[] = [
+          {
+            day,
+            tryout_number: tryoutNumber,
+            attended:
+              playersRef.current
+                .find((p) => p.id === playerId)
+                ?.tryout_days?.find((d) => d.day === day)?.attended ?? false,
+          },
+        ];
+        if (tryoutNumber != null) {
+          const player = playersRef.current.find((p) => p.id === playerId);
+          for (let d = day + 1; d <= dayCount; d++) {
+            const existing = player?.tryout_days?.find((x) => x.day === d);
+            if (existing?.tryout_number != null) continue;
+            localDays.push({
+              day: d,
+              tryout_number: tryoutNumber,
+              attended: existing?.attended ?? false,
+            });
+          }
+        }
+        mergeTryoutDaysLocal(playerId, localDays);
+        void persistSnapshot();
+        return;
+      }
+
+      try {
+        const written = await setTryoutNumberWithPrepopulate({
+          playerId,
+          day,
+          tryoutNumber,
+          dayCount,
+        });
+        mergeTryoutDaysLocal(playerId, written);
+        muteRealtimeBriefly();
+        void persistSnapshot();
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : 'Failed to update tryout number'
+        );
+        throw e;
+      }
+    },
+    [queueIfNeeded, persistSnapshot]
+  );
+
+  const setTryoutAttended = useCallback(
+    async (playerId: string, day: number, attended: boolean) => {
+      setError(null);
+      if (
+        await queueIfNeeded({
+          type: 'upsertTryoutDay',
+          playerId,
+          day,
+          attended,
+        })
+      ) {
+        const existing = playersRef.current
+          .find((p) => p.id === playerId)
+          ?.tryout_days?.find((d) => d.day === day);
+        mergeTryoutDaysLocal(playerId, [
+          {
+            day,
+            tryout_number: existing?.tryout_number ?? null,
+            attended,
+          },
+        ]);
+        void persistSnapshot();
+        return;
+      }
+
+      try {
+        const written = await upsertTryoutDay({
+          playerId,
+          day,
+          patch: { attended },
+        });
+        mergeTryoutDaysLocal(playerId, [written]);
+        muteRealtimeBriefly();
+        void persistSnapshot();
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : 'Failed to update attendance'
+        );
+        throw e;
+      }
+    },
+    [queueIfNeeded, persistSnapshot]
+  );
+
   const replayApiRef = useRef({
     assignSquad,
     savePlayer,
@@ -1916,6 +2105,8 @@ export function RosterDataProvider({
     moveAvailableToBottomAction,
     resetAvailableOrder,
     applyAvailablePlan,
+    setTryoutNumber,
+    setTryoutAttended,
   });
   replayApiRef.current = {
     assignSquad,
@@ -1931,6 +2122,8 @@ export function RosterDataProvider({
     moveAvailableToBottomAction,
     resetAvailableOrder,
     applyAvailablePlan,
+    setTryoutNumber,
+    setTryoutAttended,
   };
 
   const persistSnapshotRef = useRef(persistSnapshot);
@@ -2004,6 +2197,18 @@ export function RosterDataProvider({
           case 'adminLiveRemoveFromTeam':
             // Legacy Live op — clear assignment on shared workspace.
             await api.assignSquad(op.playerId, null);
+            break;
+          case 'upsertTryoutDay':
+            if ('tryoutNumber' in op) {
+              await api.setTryoutNumber(
+                op.playerId,
+                op.day,
+                op.tryoutNumber ?? null
+              );
+            }
+            if ('attended' in op && op.attended !== undefined) {
+              await api.setTryoutAttended(op.playerId, op.day, op.attended);
+            }
             break;
           default:
             break;
@@ -2092,6 +2297,10 @@ export function RosterDataProvider({
       moveAvailableToTop: moveAvailableToTopAction,
       moveAvailableToBottom: moveAvailableToBottomAction,
       resetAvailableOrder,
+      startTryout,
+      endTryout,
+      setTryoutNumber,
+      setTryoutAttended,
     }),
     [
       rosterId,
@@ -2115,6 +2324,10 @@ export function RosterDataProvider({
       moveAvailableToTopAction,
       moveAvailableToBottomAction,
       resetAvailableOrder,
+      startTryout,
+      endTryout,
+      setTryoutNumber,
+      setTryoutAttended,
     ]
   );
 

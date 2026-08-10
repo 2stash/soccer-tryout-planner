@@ -11,6 +11,8 @@ export const colors = {
   warningBg: '#fff8e8',
   warningText: '#7a5b00',
   rowHover: '#eef5f1',
+  /** Soft tint for players who attended any tryout day (while tryout_active). */
+  tryoutPresentBg: '#e6f3ee',
 };
 
 export const layout = {

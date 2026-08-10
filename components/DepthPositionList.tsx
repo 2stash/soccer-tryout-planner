@@ -15,6 +15,8 @@ import {
 } from '@/lib/positions';
 import { PositionSelect } from '@/components/PositionSelect';
 import { SquadSelect } from '@/components/SquadSelect';
+import { useRosterData } from '@/lib/RosterDataContext';
+import { playerAttendedAnyTryout } from '@/lib/tryout';
 import { colors, layout } from '@/constants/theme';
 
 type Props = {
@@ -155,6 +157,9 @@ function DepthCard({
   onPress?: () => void;
   onMove: (playerId: string, direction: 'up' | 'down') => Promise<void>;
 }) {
+  const { roster } = useRosterData();
+  const present =
+    Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
   const [moving, setMoving] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
   const pos = formatPositionsShort(player.positions);
@@ -180,6 +185,7 @@ function DepthCard({
       style={[
         styles.card,
         isStarter && showRole && styles.cardStarter,
+        present && styles.cardPresent,
         moving && styles.rowBusy,
       ]}
     >
@@ -316,6 +322,9 @@ function DepthRow({
   ) => Promise<void>;
   onMove: (playerId: string, direction: 'up' | 'down') => Promise<void>;
 }) {
+  const { roster } = useRosterData();
+  const present =
+    Boolean(roster?.tryout_active) && playerAttendedAnyTryout(player);
   const [positions, setPositions] = useState(() =>
     normalizePositions(player.positions)
   );
@@ -394,6 +403,7 @@ function DepthRow({
         style={[
           styles.row,
           isStarter && styles.starterRow,
+          present && styles.presentRow,
           (saving || moving) && styles.rowBusy,
         ]}
       >
@@ -486,6 +496,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#e8f5ef',
     borderColor: '#c5e4d4',
   },
+  cardPresent: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+  },
   cardMain: {
     flex: 1,
     minWidth: 0,
@@ -569,6 +584,11 @@ const styles = StyleSheet.create({
   },
   starterRow: {
     backgroundColor: '#e8f5ef',
+  },
+  presentRow: {
+    backgroundColor: colors.tryoutPresentBg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   rowBusy: {
     opacity: 0.7,
