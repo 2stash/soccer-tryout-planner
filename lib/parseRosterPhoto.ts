@@ -85,135 +85,65 @@ function toPlayerInput(
   };
 }
 
-type NameHit = {
-  index: number;
-  firstName: string;
-  lastName: string;
-  inlineClass: string;
-  classRaw: string;
-};
-
-function applyColumnZip(names: NameHit[], classTokens: string[]) {
-  let cursor = 0;
-  for (const name of names) {
-    if (name.inlineClass) {
-      name.classRaw = name.inlineClass;
-      continue;
-    }
-    name.classRaw = cursor < classTokens.length ? classTokens[cursor++] : '';
-  }
-}
-
 /**
- * Parse OCR text from a printed roster photo.
+ * Parse OCR text from a printed roster photo, row by row.
  *
- * 1) Row-first: class on the same line, or the next OCR line if it is a class token.
- * 2) If most names still lack a year but class tokens remain, fall back to
- *    column zip (all names × all class tokens by order).
- * 3) Otherwise fill only the remaining gaps from leftover class tokens.
+ * For each Last, First name, take the class only from:
+ * - the same OCR line, or
+ * - the immediately following OCR line if it is a class/year token.
  *
- * Blank years are OK — names still import and can be fixed later.
+ * No column zip / leftover shifting — a missed year stays blank on that
+ * player only and does not reassign later years.
  */
 export function parseRosterPhotoText(texts: string[]): ImportParseResult {
   const lines = flattenOcrLines(texts);
-  const names: NameHit[] = [];
-  const classByIndex = new Map<number, string>();
+  const rows: PlayerInput[] = [];
+  const errors: ImportParseResult['errors'] = [];
+  const seen = new Set<string>();
+  let missingYearCount = 0;
+  let nameCount = 0;
+  let classPaired = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (HEADER_RE.test(line)) continue;
 
-    if (isClassToken(line) && !line.includes(',')) {
-      classByIndex.set(i, line.trim());
-      continue;
-    }
+    // Standalone class tokens are only consumed when attached to the prior name.
+    if (isClassToken(line) && !line.includes(',')) continue;
 
     const match = line.match(NAME_LINE_RE);
     if (!match) continue;
 
-    names.push({
-      index: i,
-      lastName: match[1].trim(),
-      firstName: match[2].trim(),
-      inlineClass: (match[3] ?? '').trim(),
-      classRaw: '',
-    });
-  }
+    const lastName = match[1].trim();
+    const firstName = match[2].trim();
+    let classRaw = (match[3] ?? '').trim();
 
-  const allClassTokens = [...classByIndex.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, token]) => token);
-
-  const usedClassIndexes = new Set<number>();
-
-  // Pass 1 — row-wise pairing.
-  for (const name of names) {
-    if (name.inlineClass) {
-      name.classRaw = name.inlineClass;
-      continue;
+    if (!classRaw && i + 1 < lines.length && isClassToken(lines[i + 1])) {
+      classRaw = lines[i + 1].trim();
+      i += 1;
     }
-    const nextIdx = name.index + 1;
-    const next = classByIndex.get(nextIdx);
-    if (next) {
-      name.classRaw = next;
-      usedClassIndexes.add(nextIdx);
-    }
-  }
 
-  const missingAfterRow = names.filter((n) => !n.classRaw).length;
-  const namesNeedingClass = names.filter((n) => !n.inlineClass).length;
-  const leftoverClasses = [...classByIndex.entries()]
-    .filter(([idx]) => !usedClassIndexes.has(idx))
-    .sort((a, b) => a[0] - b[0])
-    .map(([, token]) => token);
+    nameCount += 1;
 
-  let strategy: 'row' | 'column' | 'row+fill' = 'row';
-
-  // Row pairing mostly failed (typical when OCR reads the name column, then the class column).
-  const rowMostlyFailed =
-    names.length > 0 &&
-    missingAfterRow >= names.length / 2 &&
-    allClassTokens.length >= Math.max(1, namesNeedingClass - missingAfterRow) &&
-    leftoverClasses.length >= missingAfterRow;
-
-  if (rowMostlyFailed && allClassTokens.length > 0) {
-    applyColumnZip(names, allClassTokens);
-    strategy = 'column';
-  } else if (missingAfterRow > 0 && leftoverClasses.length > 0) {
-    let cursor = 0;
-    for (const name of names) {
-      if (name.classRaw) continue;
-      if (cursor >= leftoverClasses.length) break;
-      name.classRaw = leftoverClasses[cursor++];
-    }
-    strategy = 'row+fill';
-  }
-
-  const rows: PlayerInput[] = [];
-  const errors: ImportParseResult['errors'] = [];
-  const seen = new Set<string>();
-  let missingYearCount = 0;
-
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i];
-    if (!name.firstName || !name.lastName) {
+    if (!firstName || !lastName) {
       errors.push({
-        row: i + 1,
+        row: nameCount,
         message: 'Could not read first and last name',
       });
       continue;
     }
 
-    const schoolYear = name.classRaw ? mapPhotoClassToken(name.classRaw) : '';
-    if (name.classRaw && !schoolYear) {
+    const schoolYear = classRaw ? mapPhotoClassToken(classRaw) : '';
+    if (classRaw && !schoolYear) {
       errors.push({
-        row: i + 1,
-        message: `Unrecognized class “${name.classRaw}” for ${name.lastName}, ${name.firstName}`,
+        row: nameCount,
+        message: `Unrecognized class “${classRaw}” for ${lastName}, ${firstName}`,
       });
     }
-    if (!schoolYear) missingYearCount += 1;
+    if (schoolYear) classPaired += 1;
+    else missingYearCount += 1;
 
-    const row = toPlayerInput(name.firstName, name.lastName, schoolYear);
+    const row = toPlayerInput(firstName, lastName, schoolYear);
     const key = `${row.last_name}|${row.first_name}|${row.school_year}`.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -241,9 +171,9 @@ export function parseRosterPhotoText(texts: string[]): ImportParseResult {
     rows,
     errors,
     headersFound: [
-      `photo: names (${names.length})`,
-      `photo: class (${allClassTokens.length})`,
-      `photo: ${strategy}`,
+      `photo: names (${nameCount})`,
+      `photo: years paired (${classPaired})`,
+      'photo: row pairing',
     ],
   };
 }
