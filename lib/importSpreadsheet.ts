@@ -29,15 +29,10 @@ const HEADER_ALIASES: Record<string, ImportField> = {
   'school year': 'school_year',
   year: 'school_year',
   grade: 'school_year',
+  class: 'school_year',
   positions: 'positions',
   position: 'position',
   pos: 'position',
-  position_rank: 'position_rank',
-  positionrank: 'position_rank',
-  'position rank': 'position_rank',
-  team_rank: 'team_rank',
-  teamrank: 'team_rank',
-  'team rank': 'team_rank',
 };
 
 function normalizeHeader(value: unknown): string {
@@ -45,13 +40,6 @@ function normalizeHeader(value: unknown): string {
     .trim()
     .toLowerCase()
     .replace(/[\s-]+/g, ' ');
-}
-
-function parseOptionalInt(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-  return Math.trunc(n);
 }
 
 function mapHeaders(rawHeaders: unknown[]): Partial<Record<ImportField, number>> {
@@ -138,44 +126,11 @@ export function parseSpreadsheetBuffer(data: ArrayBuffer | Uint8Array): ImportPa
           : '';
     const positions = parsePositionsInput(positionRaw);
 
-    let positionRank: number | null = null;
-    let teamRank: number | null = null;
-
-    if (columnMap.position_rank !== undefined) {
-      const raw = line[columnMap.position_rank];
-      if (String(raw ?? '').trim() !== '') {
-        positionRank = parseOptionalInt(raw);
-        if (positionRank === null) {
-          errors.push({
-            row: spreadsheetRow,
-            message: 'position_rank must be a number',
-          });
-          continue;
-        }
-      }
-    }
-
-    if (columnMap.team_rank !== undefined) {
-      const raw = line[columnMap.team_rank];
-      if (String(raw ?? '').trim() !== '') {
-        teamRank = parseOptionalInt(raw);
-        if (teamRank === null) {
-          errors.push({
-            row: spreadsheetRow,
-            message: 'team_rank must be a number',
-          });
-          continue;
-        }
-      }
-    }
-
     rows.push({
       first_name: firstName,
       last_name: lastName,
       school_year: schoolYear,
       positions,
-      position_rank: positionRank,
-      team_rank: teamRank,
     });
   }
 

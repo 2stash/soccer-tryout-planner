@@ -112,8 +112,6 @@ async function main() {
     last_name: p.last_name ?? '',
     school_year: p.school_year ?? '',
     positions: formatPositions(p.positions),
-    position_rank: p.position_rank ?? '',
-    team_rank: p.team_rank ?? '',
   }));
 
   const minimalRows = players.map((p) => ({
@@ -128,14 +126,7 @@ async function main() {
   writeFileSync(
     fullPath,
     toCsv(
-      [
-        'first_name',
-        'last_name',
-        'school_year',
-        'positions',
-        'position_rank',
-        'team_rank',
-      ],
+      ['first_name', 'last_name', 'school_year', 'positions'],
       fullRows
     ),
     'utf8'
@@ -160,7 +151,6 @@ async function main() {
           last_name: p.last_name,
           school_year: p.school_year,
           positions: p.positions,
-          position_rank: p.position_rank,
           team_rank: p.team_rank,
           squad_team: p.squad_team,
         })),

@@ -68,8 +68,6 @@ export function PlayerEditSheet({
       last_name: lastName.trim(),
       school_year: schoolYear.trim(),
       positions,
-      position_rank: current.position_rank,
-      team_rank: current.team_rank,
     };
     const teamChanged =
       Boolean(onAssignSquad) && squadTeam !== current.squad_team;

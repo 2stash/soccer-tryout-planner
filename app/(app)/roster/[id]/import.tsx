@@ -2,7 +2,9 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
 import { ImportSheet } from '@/components/ImportSheet';
+import { TryoutImportSheet } from '@/components/TryoutImportSheet';
 import { useOffline } from '@/lib/offline/OfflineContext';
+import { useRosterData } from '@/lib/RosterDataContext';
 import { colors } from '@/constants/theme';
 
 function leaveImportScreen(rosterId: string | undefined) {
@@ -17,6 +19,8 @@ export default function ImportPlayersScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { session, loading, configured } = useAuth();
   const { isOnline } = useOffline();
+  const { roster } = useRosterData();
+  const tryoutActive = Boolean(roster?.tryout_active);
 
   if (!loading && (!configured || !session)) {
     return <Redirect href="/(auth)/sign-in" />;
@@ -29,7 +33,9 @@ export default function ImportPlayersScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.headerRow}>
-        <Text style={styles.heading}>Import players</Text>
+        <Text style={styles.heading}>
+          {tryoutActive ? 'Import tryout results' : 'Import players'}
+        </Text>
         <Pressable
           onPress={() => leaveImportScreen(id)}
           hitSlop={8}
@@ -40,10 +46,13 @@ export default function ImportPlayersScreen() {
         </Pressable>
       </View>
       <Text style={styles.sub}>
-        Preview mapped columns, then confirm to insert players into this team.
-        {Platform.OS === 'ios'
-          ? ' On iPhone, use Scan photo for a printed Last, First + class list.'
-          : ''}
+        {tryoutActive
+          ? 'Choose the tryout day, preview numbers and times, then confirm. Players with a number are marked present; times are saved to Time Trial.'
+          : `Preview mapped columns, then confirm to insert players into this team.${
+              Platform.OS === 'ios'
+                ? ' On iPhone, use Scan photo for a printed Last, First + class list.'
+                : ''
+            }`}
       </Text>
       {!isOnline ? (
         <Text style={styles.offlineNote}>
@@ -52,10 +61,14 @@ export default function ImportPlayersScreen() {
         </Text>
       ) : (
         <View style={styles.sheet}>
-          <ImportSheet
-            rosterId={id}
-            onImported={() => leaveImportScreen(id)}
-          />
+          {tryoutActive ? (
+            <TryoutImportSheet onImported={() => leaveImportScreen(id)} />
+          ) : (
+            <ImportSheet
+              rosterId={id}
+              onImported={() => leaveImportScreen(id)}
+            />
+          )}
         </View>
       )}
     </View>

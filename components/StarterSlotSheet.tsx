@@ -367,8 +367,6 @@ export function StarterSlotSheet({
       last_name: lastName.trim(),
       school_year: schoolYear.trim(),
       positions,
-      position_rank: player.position_rank,
-      team_rank: player.team_rank,
     };
     const teamChanged =
       Boolean(onAssignSquad) && squadTeam !== player.squad_team;

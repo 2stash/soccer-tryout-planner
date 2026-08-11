@@ -80,8 +80,6 @@ function toPlayerInput(
     last_name: titleCaseName(lastName),
     school_year: schoolYear,
     positions: [],
-    position_rank: null,
-    team_rank: null,
   };
 }
 

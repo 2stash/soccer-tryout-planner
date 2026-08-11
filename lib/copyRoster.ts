@@ -43,8 +43,6 @@ async function insertPlayersCopy(
       school_year: p.school_year ?? '',
       positions,
       position: formatPositionsShort(positions) || p.position || '',
-      position_rank: p.position_rank,
-      team_rank: null,
     };
   });
 

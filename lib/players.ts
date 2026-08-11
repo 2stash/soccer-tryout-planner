@@ -38,7 +38,6 @@ function mapPlayer(
         ? row.position
         : formatPositionsShort(positions),
     positions,
-    position_rank: (row.position_rank as number | null) ?? null,
     team_rank: assignment?.team_rank ?? null,
     available_pinned: Boolean(assignment?.available_pinned),
     squad_team: assignment?.squad_team ?? null,
@@ -56,9 +55,6 @@ function toDbPayload(input: PlayerInput) {
     school_year: input.school_year,
     positions,
     position: formatPositionsShort(positions),
-    position_rank: input.position_rank,
-    // team_rank on players is legacy; overlays own ranking.
-    team_rank: null,
   };
 }
 
@@ -384,10 +380,10 @@ export async function bulkInsertPlayers(
 ): Promise<Player[]> {
   if (rows.length === 0) return [];
 
-  // Seed Available by class then name after insert — ignore sheet team_rank.
+  // Seed Available by class then name after insert.
   const payload = rows.map((row) => ({
     roster_id: rosterId,
-    ...toDbPayload({ ...row, team_rank: null }),
+    ...toDbPayload(row),
   }));
   const { data, error } = await supabase
     .from('players')

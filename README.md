@@ -109,16 +109,14 @@ Header row required. Column names (aliases accepted):
 | first_name | yes |
 | last_name | yes |
 | school_year | no |
-| position | no |
-| position_rank | no |
-| team_rank | no |
+| positions | no |
 
 Example CSV:
 
 ```csv
-first_name,last_name,school_year,position,position_rank,team_rank
-Alex,Rivera,10,Midfielder,2,5
-Jordan,Lee,11,Forward,1,3
+first_name,last_name,school_year,positions
+Alex,Rivera,10,"6,8"
+Jordan,Lee,11,9
 ```
 
 ## Project layout

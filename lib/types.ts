@@ -129,7 +129,10 @@ export type Player = {
   position: string;
   /** Standard shirt numbers 1–11 (multi-select). */
   positions: number[];
-  position_rank: number | null;
+  /**
+   * Available/Unavailable order from `player_assignments.team_rank`
+   * (not a player-form field).
+   */
   team_rank: number | null;
   /** Starred in Available/Unavailable — locked to the top band of that pool. */
   available_pinned: boolean;
@@ -145,8 +148,6 @@ export type PlayerInput = {
   last_name: string;
   school_year: string;
   positions: number[];
-  position_rank: number | null;
-  team_rank: number | null;
 };
 
 export const PLAYER_FIELD_LABELS: Record<keyof PlayerInput, string> = {
@@ -154,8 +155,6 @@ export const PLAYER_FIELD_LABELS: Record<keyof PlayerInput, string> = {
   last_name: 'Last name',
   school_year: 'School year',
   positions: 'Positions',
-  position_rank: 'Position rank',
-  team_rank: 'Team rank',
 };
 
 export const SPREADSHEET_HEADERS = [
@@ -163,6 +162,4 @@ export const SPREADSHEET_HEADERS = [
   'last_name',
   'school_year',
   'positions',
-  'position_rank',
-  'team_rank',
 ] as const;

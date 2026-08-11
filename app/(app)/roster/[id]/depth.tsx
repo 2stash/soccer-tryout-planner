@@ -609,7 +609,6 @@ export default function DepthChartScreen() {
         <PlayerTable
           players={squadDepthReady ? starters : []}
           onSave={handleSave}
-          showRankColumns={false}
           showDelete={false}
           showRoleColumn={false}
           sections={squadDepthReady ? starterSection : undefined}

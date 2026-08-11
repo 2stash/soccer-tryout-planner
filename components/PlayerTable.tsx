@@ -28,9 +28,7 @@ export type PlayerTableSortKey =
   | 'last_name'
   | 'first_name'
   | 'school_year'
-  | 'positions'
-  | 'position_rank'
-  | 'team_rank';
+  | 'positions';
 
 type SortKey = PlayerTableSortKey;
 
@@ -42,8 +40,6 @@ type Props = {
   onSave: (id: string, input: PlayerInput) => Promise<void>;
   onDelete?: (player: Player) => Promise<void>;
   filter?: string;
-  /** When false, hides Pos rank / Team rank columns (values preserved on save). */
-  showRankColumns?: boolean;
   /** When false, hides the per-row Delete control. */
   showDelete?: boolean;
   /**
@@ -70,8 +66,6 @@ type Draft = {
   last_name: string;
   school_year: string;
   positions: number[];
-  position_rank: string;
-  team_rank: string;
 };
 
 const COLUMNS: { key: SortKey; label: string; flex: number }[] = [
@@ -79,17 +73,7 @@ const COLUMNS: { key: SortKey; label: string; flex: number }[] = [
   { key: 'last_name', label: 'Last', flex: 1.1 },
   { key: 'school_year', label: 'Year', flex: 0.65 },
   { key: 'positions', label: 'Positions', flex: 1.5 },
-  { key: 'position_rank', label: 'Pos rank', flex: 0.65 },
-  { key: 'team_rank', label: 'Team rank', flex: 0.65 },
 ];
-
-function parseRank(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
-  if (!Number.isFinite(n)) return null;
-  return Math.trunc(n);
-}
 
 function toDraft(player: Player): Draft {
   return {
@@ -97,8 +81,6 @@ function toDraft(player: Player): Draft {
     last_name: player.last_name ?? '',
     school_year: normalizeSchoolYear(player.school_year),
     positions: normalizePositions(player.positions),
-    position_rank: player.position_rank != null ? String(player.position_rank) : '',
-    team_rank: player.team_rank != null ? String(player.team_rank) : '',
   };
 }
 
@@ -107,9 +89,7 @@ function draftsEqual(a: Draft, b: Draft) {
     a.first_name === b.first_name &&
     a.last_name === b.last_name &&
     a.school_year === b.school_year &&
-    positionsEqual(a.positions, b.positions) &&
-    a.position_rank === b.position_rank &&
-    a.team_rank === b.team_rank
+    positionsEqual(a.positions, b.positions)
   );
 }
 
@@ -162,19 +142,7 @@ function sortPlayers(
         sensitivity: 'base',
       });
     }
-    if (sortKey === 'last_name') {
-      const cmp = comparePlayersByName(a, b);
-      return sortAsc ? cmp : -cmp;
-    }
-    const av = a[sortKey as keyof Player];
-    const bv = b[sortKey as keyof Player];
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    if (typeof av === 'number' && typeof bv === 'number') {
-      return sortAsc ? av - bv : bv - av;
-    }
-    const cmp = String(av).localeCompare(String(bv), undefined, { sensitivity: 'base' });
+    const cmp = comparePlayersByName(a, b);
     return sortAsc ? cmp : -cmp;
   });
 }
@@ -187,7 +155,6 @@ export function PlayerTable({
   onSave,
   onDelete,
   filter = '',
-  showRankColumns = true,
   showDelete,
   sections,
   sectionsPending = false,
@@ -198,9 +165,7 @@ export function PlayerTable({
 }: Props) {
   const allowDelete = showDelete ?? Boolean(onDelete);
   const q = filter.trim().toLowerCase();
-  const columns = showRankColumns
-    ? COLUMNS
-    : COLUMNS.filter((col) => col.key !== 'position_rank' && col.key !== 'team_rank');
+  const columns = COLUMNS;
   const showRole = showRoleColumn ?? Boolean(sections);
   const showSquad = showSquadColumn && Boolean(onAssignSquad);
   const showSubMove = Boolean(onMoveSub);
@@ -330,7 +295,6 @@ export function PlayerTable({
                         }
                         onSave={onSave}
                         onDelete={section.readOnly ? undefined : onDelete}
-                        showRankColumns={showRankColumns}
                         showDelete={allowDelete && !section.readOnly}
                         canMoveUp={subIndex > 0}
                         canMoveDown={
@@ -365,7 +329,6 @@ export function PlayerTable({
           onAssignSquad={onAssignSquad}
           onSave={onSave}
           onDelete={onDelete}
-          showRankColumns={showRankColumns}
           showDelete={allowDelete}
         />
       ))}
@@ -431,7 +394,6 @@ function EditableRow({
   onAssignSquad,
   onSave,
   onDelete,
-  showRankColumns,
   showDelete,
   canMoveUp = false,
   canMoveDown = false,
@@ -447,7 +409,6 @@ function EditableRow({
   ) => Promise<void>;
   onSave: (id: string, input: PlayerInput) => Promise<void>;
   onDelete?: (player: Player) => Promise<void>;
-  showRankColumns: boolean;
   showDelete: boolean;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
@@ -487,24 +448,12 @@ function EditableRow({
       setError('First and last name required');
       return;
     }
-    if (nextDraft.position_rank.trim() && parseRank(nextDraft.position_rank) === null) {
-      setError('Pos rank must be a number');
-      return;
-    }
-    if (nextDraft.team_rank.trim() && parseRank(nextDraft.team_rank) === null) {
-      setError('Team rank must be a number');
-      return;
-    }
 
     const input: PlayerInput = {
       first_name: nextDraft.first_name.trim(),
       last_name: nextDraft.last_name.trim(),
       school_year: nextDraft.school_year.trim(),
       positions: nextDraft.positions,
-      position_rank: showRankColumns
-        ? parseRank(nextDraft.position_rank)
-        : player.position_rank,
-      team_rank: showRankColumns ? parseRank(nextDraft.team_rank) : player.team_rank,
     };
 
     setSaving(true);
@@ -516,8 +465,6 @@ function EditableRow({
         last_name: input.last_name,
         school_year: input.school_year,
         positions: input.positions,
-        position_rank: input.position_rank != null ? String(input.position_rank) : '',
-        team_rank: input.team_rank != null ? String(input.team_rank) : '',
       };
       baselineRef.current = saved;
       setDraft(saved);
@@ -634,28 +581,6 @@ function EditableRow({
             void commit(next);
           }}
         />
-        {showRankColumns ? (
-          <>
-            <TextInput
-              style={[styles.input, { flex: 0.65 }]}
-              value={draft.position_rank}
-              onChangeText={(v) => updateField('position_rank', v)}
-              onBlur={() => void commit()}
-              keyboardType="numeric"
-              placeholder="#"
-              placeholderTextColor={colors.muted}
-            />
-            <TextInput
-              style={[styles.input, { flex: 0.65 }]}
-              value={draft.team_rank}
-              onChangeText={(v) => updateField('team_rank', v)}
-              onBlur={() => void commit()}
-              keyboardType="numeric"
-              placeholder="#"
-              placeholderTextColor={colors.muted}
-            />
-          </>
-        ) : null}
         {showSquadColumn && onAssignSquad ? (
           <SquadSelect
             style={{ flex: SQUAD_COL_FLEX }}

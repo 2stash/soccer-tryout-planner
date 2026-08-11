@@ -18,7 +18,13 @@ import {
   syncDepthChartTeam,
   type DepthChartEntry,
 } from '@/lib/depthChart';
+import { playerNameKey } from '@/lib/importPreview';
 import {
+  tryoutRowToPlayerInput,
+  type TryoutImportPreviewRow,
+} from '@/lib/importTryoutResults';
+import {
+  bulkInsertPlayers,
   deletePlayer,
   listPlayers,
   patchPlayer,
@@ -49,6 +55,7 @@ import {
 } from '@/lib/positions';
 import { getRoster } from '@/lib/rosters';
 import {
+  applyTryoutImportDay,
   clearTryoutDayTimes as clearTryoutDayTimesApi,
   endTryout as endTryoutApi,
   setTryoutNumberWithPrepopulate,
@@ -190,6 +197,14 @@ type RosterDataValue = {
   ) => Promise<void>;
   /** Clear all saved time-trial times for a day (optimistic + one server update). */
   clearTryoutDayTimes: (day: number) => Promise<void>;
+  /**
+   * Import tryout results for a day: create missing players, set bib #,
+   * mark present, and save time-trial times.
+   */
+  importTryoutResults: (params: {
+    day: number;
+    rows: TryoutImportPreviewRow[];
+  }) => Promise<{ created: number; present: number }>;
   /**
    * Local Time Trial stopwatch (survives tab changes within this roster).
    * Not synced — only finish times are persisted.
@@ -2165,6 +2180,66 @@ export function RosterDataProvider({
     [queueIfNeeded, persistSnapshot]
   );
 
+  const importTryoutResults = useCallback(
+    async (params: { day: number; rows: TryoutImportPreviewRow[] }) => {
+      const { day, rows } = params;
+      const workspaceId = workspaceIdRef.current;
+      if (!workspaceId) {
+        throw new Error('No active workspace for this role.');
+      }
+      if (day < 1 || day > 5) {
+        throw new Error('Invalid tryout day');
+      }
+
+      setError(null);
+      const dayCount = rosterRef.current?.tryout_day_count ?? day;
+
+      const toCreate = rows
+        .filter((row) => row.isNew)
+        .map((row) => tryoutRowToPlayerInput(row));
+      const inserted =
+        toCreate.length > 0
+          ? await bulkInsertPlayers(
+              rosterIdRef.current,
+              toCreate,
+              workspaceId
+            )
+          : [];
+
+      const byName = new Map<string, string>();
+      for (const p of playersRef.current) {
+        byName.set(playerNameKey(p.first_name, p.last_name), p.id);
+      }
+      for (const p of inserted) {
+        byName.set(playerNameKey(p.first_name, p.last_name), p.id);
+      }
+
+      let present = 0;
+      for (const row of rows) {
+        if (row.tryout_number == null) continue;
+        const playerId = byName.get(
+          playerNameKey(row.first_name, row.last_name)
+        );
+        if (!playerId) continue;
+        const written = await applyTryoutImportDay({
+          playerId,
+          day,
+          dayCount,
+          tryoutNumber: row.tryout_number,
+          timeTrialMs: row.time_trial_ms,
+        });
+        mergeTryoutDaysLocal(playerId, written);
+        present += 1;
+      }
+
+      muteRealtimeBriefly();
+      await refreshPlayersRef.current({ forceSync: true });
+      void persistSnapshot();
+      return { created: inserted.length, present };
+    },
+    [persistSnapshot]
+  );
+
   const clearTryoutDayTimes = useCallback(
     async (day: number) => {
       setError(null);
@@ -2471,6 +2546,7 @@ export function RosterDataProvider({
       setTryoutAttended,
       setTryoutTimeTrial,
       clearTryoutDayTimes,
+      importTryoutResults,
       timeTrialDay,
       timeTrialStartedAt,
       timeTrialStoppedAt,
@@ -2507,6 +2583,7 @@ export function RosterDataProvider({
       setTryoutAttended,
       setTryoutTimeTrial,
       clearTryoutDayTimes,
+      importTryoutResults,
       timeTrialDay,
       timeTrialStartedAt,
       timeTrialStoppedAt,

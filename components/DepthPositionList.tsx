@@ -357,8 +357,6 @@ function DepthRow({
         last_name: player.last_name ?? '',
         school_year: normalizeSchoolYear(player.school_year),
         positions: nextPositions,
-        position_rank: player.position_rank,
-        team_rank: player.team_rank,
       });
       baselineRef.current = nextPositions;
       setPositions(nextPositions);

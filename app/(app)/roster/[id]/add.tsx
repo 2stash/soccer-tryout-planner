@@ -1,4 +1,13 @@
-import { StyleSheet, Text, View } from 'react-native';
+import {
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/lib/AuthContext';
 import { alertRequiresOnline } from '@/lib/offline/gate';
@@ -25,28 +34,46 @@ export default function AddPlayerScreen() {
   }
 
   return (
-    <View style={styles.screen}>
-      <Text style={styles.heading}>Add player</Text>
-      <Text style={styles.sub}>Enter player details for this team.</Text>
-      {!isOnline ? (
-        <Text style={styles.offlineNote}>
-          Adding players requires a network connection.
-        </Text>
-      ) : null}
-      <PlayerForm
-        submitLabel="Add player"
-        onCancel={() => leaveAddScreen(id)}
-        onSubmit={async (value) => {
-          if (!id) return;
-          if (!isOnline) {
-            alertRequiresOnline('Adding players');
-            return;
-          }
-          await createPlayer(id, value);
-          leaveAddScreen(id);
-        }}
-      />
-    </View>
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+      >
+        <Pressable onPress={Keyboard.dismiss} accessible={false}>
+          <View style={styles.content}>
+            <Text style={styles.heading}>Add player</Text>
+            <Text style={styles.sub}>Enter player details for this team.</Text>
+            {!isOnline ? (
+              <Text style={styles.offlineNote}>
+                Adding players requires a network connection.
+              </Text>
+            ) : null}
+            <PlayerForm
+              submitLabel="Add player"
+              onCancel={() => {
+                Keyboard.dismiss();
+                leaveAddScreen(id);
+              }}
+              onSubmit={async (value) => {
+                if (!id) return;
+                if (!isOnline) {
+                  alertRequiresOnline('Adding players');
+                  return;
+                }
+                Keyboard.dismiss();
+                await createPlayer(id, value);
+                leaveAddScreen(id);
+              }}
+            />
+          </View>
+        </Pressable>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -54,7 +81,13 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  scrollContent: {
+    flexGrow: 1,
     padding: 20,
+    paddingBottom: 40,
+  },
+  content: {
     gap: 10,
   },
   heading: {

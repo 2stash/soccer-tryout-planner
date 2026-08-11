@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Keyboard,
   Pressable,
   StyleSheet,
   Text,
@@ -21,14 +22,6 @@ type Props = {
   onCancel?: () => void;
 };
 
-function parseRank(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
-  if (!Number.isFinite(n)) return null;
-  return Math.trunc(n);
-}
-
 export function PlayerForm({
   initial,
   submitLabel = 'Save',
@@ -43,12 +36,6 @@ export function PlayerForm({
   const [positions, setPositions] = useState<number[]>(
     normalizePositions(initial?.positions ?? [])
   );
-  const [positionRank, setPositionRank] = useState(
-    initial?.position_rank != null ? String(initial.position_rank) : ''
-  );
-  const [teamRank, setTeamRank] = useState(
-    initial?.team_rank != null ? String(initial.team_rank) : ''
-  );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -59,15 +46,6 @@ export function PlayerForm({
       return;
     }
 
-    if (positionRank.trim() && parseRank(positionRank) === null) {
-      setError('Position rank must be a number.');
-      return;
-    }
-    if (teamRank.trim() && parseRank(teamRank) === null) {
-      setError('Team rank must be a number.');
-      return;
-    }
-
     setSaving(true);
     try {
       await onSubmit({
@@ -75,8 +53,6 @@ export function PlayerForm({
         last_name: lastName.trim(),
         school_year: schoolYear.trim(),
         positions,
-        position_rank: parseRank(positionRank),
-        team_rank: parseRank(teamRank),
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save player');
@@ -87,8 +63,16 @@ export function PlayerForm({
 
   return (
     <View style={styles.form}>
-      <Field label={PLAYER_FIELD_LABELS.first_name} value={firstName} onChangeText={setFirstName} />
-      <Field label={PLAYER_FIELD_LABELS.last_name} value={lastName} onChangeText={setLastName} />
+      <Field
+        label={PLAYER_FIELD_LABELS.first_name}
+        value={firstName}
+        onChangeText={setFirstName}
+      />
+      <Field
+        label={PLAYER_FIELD_LABELS.last_name}
+        value={lastName}
+        onChangeText={setLastName}
+      />
       <View style={styles.field}>
         <Text style={styles.label}>{PLAYER_FIELD_LABELS.school_year}</Text>
         <YearSelect value={schoolYear} onChange={setSchoolYear} />
@@ -97,33 +81,32 @@ export function PlayerForm({
         <Text style={styles.label}>{PLAYER_FIELD_LABELS.positions}</Text>
         <PositionSelect value={positions} onChange={setPositions} />
       </View>
-      <Field
-        label={PLAYER_FIELD_LABELS.position_rank}
-        value={positionRank}
-        onChangeText={setPositionRank}
-        keyboardType="numeric"
-      />
-      <Field
-        label={PLAYER_FIELD_LABELS.team_rank}
-        value={teamRank}
-        onChangeText={setTeamRank}
-        keyboardType="numeric"
-      />
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <View style={styles.actions}>
         {onCancel ? (
-          <Pressable style={styles.secondaryBtn} onPress={onCancel}>
+          <Pressable
+            style={styles.secondaryBtn}
+            onPress={() => {
+              Keyboard.dismiss();
+              onCancel();
+            }}
+          >
             <Text style={styles.secondaryText}>Cancel</Text>
           </Pressable>
         ) : null}
         <Pressable
           style={[styles.primaryBtn, saving && styles.disabled]}
-          onPress={handleSubmit}
+          onPress={() => {
+            Keyboard.dismiss();
+            void handleSubmit();
+          }}
           disabled={saving}
         >
-          <Text style={styles.primaryText}>{saving ? 'Saving…' : submitLabel}</Text>
+          <Text style={styles.primaryText}>
+            {saving ? 'Saving…' : submitLabel}
+          </Text>
         </Pressable>
       </View>
     </View>
@@ -135,13 +118,11 @@ function Field({
   value,
   onChangeText,
   placeholder,
-  keyboardType,
 }: {
   label: string;
   value: string;
   onChangeText: (v: string) => void;
   placeholder?: string;
-  keyboardType?: 'default' | 'numeric';
 }) {
   return (
     <View style={styles.field}>
@@ -152,8 +133,10 @@ function Field({
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor={colors.muted}
-        keyboardType={keyboardType}
         autoCapitalize="words"
+        returnKeyType="done"
+        blurOnSubmit
+        onSubmitEditing={Keyboard.dismiss}
       />
     </View>
   );

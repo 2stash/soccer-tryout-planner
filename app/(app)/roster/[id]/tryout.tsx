@@ -79,11 +79,20 @@ function matchesTryoutFilter(player: Player, raw: string) {
   );
 }
 
-function sortByYearThenName(list: Player[]): Player[] {
+type TryoutSortMode = 'year_name' | 'name';
+
+const SORT_OPTIONS: { key: TryoutSortMode; label: string }[] = [
+  { key: 'year_name', label: 'year → lastname' },
+  { key: 'name', label: 'lastname' },
+];
+
+function sortPlayers(list: Player[], mode: TryoutSortMode): Player[] {
   return [...list].sort((a, b) => {
-    const cmp =
-      schoolYearSortKey(a.school_year) - schoolYearSortKey(b.school_year);
-    if (cmp !== 0) return cmp;
+    if (mode === 'year_name') {
+      const cmp =
+        schoolYearSortKey(a.school_year) - schoolYearSortKey(b.school_year);
+      if (cmp !== 0) return cmp;
+    }
     return comparePlayersByName(a, b);
   });
 }
@@ -183,6 +192,8 @@ export default function TryoutScreen() {
   const [day, setDay] = useState<DaySelection>(1);
   const [filter, setFilter] = useState('');
   const [gradeFilter, setGradeFilter] = useState<GradeFilter>('all');
+  const [sortMode, setSortMode] = useState<TryoutSortMode>('year_name');
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Player | null>(null);
@@ -209,8 +220,8 @@ export default function TryoutScreen() {
 
   const cardPlayers = useMemo(() => {
     const filtered = gradeVisible.filter((p) => matchesTryoutFilter(p, filter));
-    return sortByYearThenName(filtered);
-  }, [gradeVisible, filter]);
+    return sortPlayers(filtered, sortMode);
+  }, [gradeVisible, filter, sortMode]);
 
   const duplicateNumbers = useMemo(() => {
     if (day === 'all') return new Set<number>();
@@ -382,7 +393,9 @@ export default function TryoutScreen() {
                     router.push(`/roster/${rosterId}/import`);
                   }}
                 >
-                  <Text style={styles.secondaryText}>Import</Text>
+                  <Text style={styles.secondaryText}>
+                    Import tryout results
+                  </Text>
                 </Pressable>
                 <Pressable
                   style={[
@@ -391,7 +404,7 @@ export default function TryoutScreen() {
                   ]}
                   disabled={players.length === 0}
                   onPress={() =>
-                    downloadFullPlayersCsv(players, roster?.name ?? 'roster')
+                    void downloadFullPlayersCsv(players, roster?.name ?? 'roster')
                   }
                 >
                   <Text style={styles.secondaryText}>Export full</Text>
@@ -403,7 +416,7 @@ export default function TryoutScreen() {
                   ]}
                   disabled={players.length === 0}
                   onPress={() =>
-                    downloadNamesYearCsv(players, roster?.name ?? 'roster')
+                    void downloadNamesYearCsv(players, roster?.name ?? 'roster')
                   }
                 >
                   <Text style={styles.secondaryText}>Export names</Text>
@@ -425,7 +438,7 @@ export default function TryoutScreen() {
                   router.push(`/roster/${rosterId}/import`);
                 }}
               >
-                <Text style={styles.moreText}>Import</Text>
+                <Text style={styles.moreText}>Import tryout results</Text>
               </Pressable>
               <Pressable
                 style={[
@@ -434,7 +447,7 @@ export default function TryoutScreen() {
                 ]}
                 disabled={players.length === 0}
                 onPress={() => {
-                  downloadFullPlayersCsv(players, roster?.name ?? 'roster');
+                  void downloadFullPlayersCsv(players, roster?.name ?? 'roster');
                   setMoreOpen(false);
                 }}
               >
@@ -447,7 +460,7 @@ export default function TryoutScreen() {
                 ]}
                 disabled={players.length === 0}
                 onPress={() => {
-                  downloadNamesYearCsv(players, roster?.name ?? 'roster');
+                  void downloadNamesYearCsv(players, roster?.name ?? 'roster');
                   setMoreOpen(false);
                 }}
               >
@@ -477,6 +490,24 @@ export default function TryoutScreen() {
                 </Pressable>
               );
             })}
+            <Pressable
+              style={[
+                styles.sortBtn,
+                sortMenuOpen && styles.sortBtnActive,
+                players.length === 0 && styles.btnDisabled,
+              ]}
+              disabled={players.length === 0}
+              onPress={() => setSortMenuOpen(true)}
+            >
+              <Text
+                style={[
+                  styles.sortBtnText,
+                  sortMenuOpen && styles.sortBtnTextActive,
+                ]}
+              >
+                Sort
+              </Text>
+            </Pressable>
           </View>
 
           {displayError ? (
@@ -640,6 +671,44 @@ export default function TryoutScreen() {
           void handleNumberSelect(n);
         }}
       />
+
+      <Modal
+        visible={sortMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSortMenuOpen(false)}
+      >
+        <Pressable
+          style={styles.sortBackdrop}
+          onPress={() => setSortMenuOpen(false)}
+        >
+          <Pressable style={styles.sortMenuCard} onPress={() => {}}>
+            <Text style={styles.sortMenuTitle}>Sort</Text>
+            {SORT_OPTIONS.map((option) => {
+              const active = sortMode === option.key;
+              return (
+                <Pressable
+                  key={option.key}
+                  style={[styles.sortItem, active && styles.sortItemActive]}
+                  onPress={() => {
+                    setSortMode(option.key);
+                    setSortMenuOpen(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.sortItemText,
+                      active && styles.sortItemTextActive,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -796,6 +865,67 @@ const styles = StyleSheet.create({
   },
   gradeTextActive: {
     color: colors.primaryText,
+  },
+  sortBtn: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  sortBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  sortBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  sortBtnTextActive: {
+    color: colors.primaryText,
+  },
+  sortBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(21, 32, 43, 0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  sortMenuCard: {
+    width: '100%',
+    maxWidth: 320,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+    paddingVertical: 8,
+  },
+  sortMenuTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.muted,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  sortItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  sortItemActive: {
+    backgroundColor: '#e8f5ef',
+  },
+  sortItemText: {
+    fontWeight: '700',
+    color: colors.text,
+    fontSize: 16,
+  },
+  sortItemTextActive: {
+    color: colors.primary,
   },
   errorBanner: {
     flexDirection: 'row',

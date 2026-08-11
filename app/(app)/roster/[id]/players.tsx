@@ -270,7 +270,11 @@ export default function AllPlayersScreen() {
                     router.push(`/roster/${rosterId}/import`);
                   }}
                 >
-                  <Text style={styles.secondaryText}>Import</Text>
+                  <Text style={styles.secondaryText}>
+                    {roster?.tryout_active
+                      ? 'Import tryout results'
+                      : 'Import'}
+                  </Text>
                 </Pressable>
                 <Pressable
                   style={[
@@ -279,7 +283,7 @@ export default function AllPlayersScreen() {
                   ]}
                   disabled={players.length === 0}
                   onPress={() =>
-                    downloadFullPlayersCsv(players, roster?.name ?? 'roster')
+                    void downloadFullPlayersCsv(players, roster?.name ?? 'roster')
                   }
                 >
                   <Text style={styles.secondaryText}>Export full</Text>
@@ -291,7 +295,7 @@ export default function AllPlayersScreen() {
                   ]}
                   disabled={players.length === 0}
                   onPress={() =>
-                    downloadNamesYearCsv(players, roster?.name ?? 'roster')
+                    void downloadNamesYearCsv(players, roster?.name ?? 'roster')
                   }
                 >
                   <Text style={styles.secondaryText}>Export names</Text>
@@ -313,7 +317,11 @@ export default function AllPlayersScreen() {
                   router.push(`/roster/${rosterId}/import`);
                 }}
               >
-                <Text style={styles.moreText}>Import</Text>
+                <Text style={styles.moreText}>
+                  {roster?.tryout_active
+                    ? 'Import tryout results'
+                    : 'Import'}
+                </Text>
               </Pressable>
               <Pressable
                 style={[
@@ -322,7 +330,7 @@ export default function AllPlayersScreen() {
                 ]}
                 disabled={players.length === 0}
                 onPress={() => {
-                  downloadFullPlayersCsv(players, roster?.name ?? 'roster');
+                  void downloadFullPlayersCsv(players, roster?.name ?? 'roster');
                   setMoreOpen(false);
                 }}
               >
@@ -335,7 +343,7 @@ export default function AllPlayersScreen() {
                 ]}
                 disabled={players.length === 0}
                 onPress={() => {
-                  downloadNamesYearCsv(players, roster?.name ?? 'roster');
+                  void downloadNamesYearCsv(players, roster?.name ?? 'roster');
                   setMoreOpen(false);
                 }}
               >
@@ -430,7 +438,6 @@ export default function AllPlayersScreen() {
               onDelete={handleDelete}
               onAssignSquad={handleAssignSquad}
               showSquadColumn
-              showRankColumns={false}
               showRoleColumn={false}
               showDelete
               sectionsPending={loading && players.length === 0}

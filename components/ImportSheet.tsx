@@ -196,23 +196,12 @@ export function ImportSheet({ rosterId, onImported }: Props) {
     try {
       const inserted = await bulkInsertPlayers(
         rosterId,
-        newRows.map(
-          ({
-            first_name,
-            last_name,
-            school_year,
-            positions,
-            position_rank,
-            team_rank,
-          }) => ({
-            first_name,
-            last_name,
-            school_year,
-            positions,
-            position_rank,
-            team_rank,
-          })
-        ),
+        newRows.map(({ first_name, last_name, school_year, positions }) => ({
+          first_name,
+          last_name,
+          school_year,
+          positions,
+        })),
         activeWorkspaceId
       );
       onImported(inserted.length);
