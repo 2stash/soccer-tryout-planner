@@ -277,7 +277,8 @@ export function buildTryoutImportPreviewRows(
       ...row,
       matchedPlayerId,
       isNew,
-      willMarkPresent: row.tryout_number != null,
+      // Rows on a tryout-results sheet are treated as present for that day.
+      willMarkPresent: true,
     });
   }
 

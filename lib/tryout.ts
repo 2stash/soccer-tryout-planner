@@ -193,30 +193,32 @@ export async function setTryoutNumberWithPrepopulate(params: {
 }
 
 /**
- * Apply one tryout-results import row: set bib #, mark present, optional time.
- * Prepopulates the bib number onto later empty days.
+ * Apply one tryout-results import row: mark present, optional bib # / time.
+ * Prepopulates bib number onto later empty days when a number is provided.
  */
 export async function applyTryoutImportDay(params: {
   playerId: string;
   day: number;
   dayCount: number;
-  tryoutNumber: number;
+  tryoutNumber: number | null;
   timeTrialMs: number | null;
 }): Promise<PlayerTryoutDay[]> {
   const { playerId, day, dayCount, tryoutNumber, timeTrialMs } = params;
   const written: PlayerTryoutDay[] = [];
 
+  const patch: TryoutDayPatch = { attended: true };
+  if (tryoutNumber != null) patch.tryout_number = tryoutNumber;
+  if (timeTrialMs != null) patch.time_trial_ms = timeTrialMs;
+
   written.push(
     await upsertTryoutDay({
       playerId,
       day,
-      patch: {
-        tryout_number: tryoutNumber,
-        attended: true,
-        time_trial_ms: timeTrialMs,
-      },
+      patch,
     })
   );
+
+  if (tryoutNumber == null) return written;
 
   const maxDay = Math.min(5, Math.max(1, dayCount));
   for (let d = day + 1; d <= maxDay; d++) {

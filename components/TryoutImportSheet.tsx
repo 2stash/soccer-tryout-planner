@@ -95,13 +95,13 @@ export function TryoutImportSheet({ onImported }: Props) {
       >
         <Text style={styles.help}>
           Upload a `.xlsx` or `.csv` with headers like{' '}
-          <Text style={styles.mono}>number</Text>,{' '}
           <Text style={styles.mono}>last_name</Text>,{' '}
           <Text style={styles.mono}>first_name</Text>,{' '}
-          <Text style={styles.mono}>time</Text>,{' '}
+          <Text style={styles.mono}>time</Text>. Optional:{' '}
+          <Text style={styles.mono}>number</Text>,{' '}
           <Text style={styles.mono}>class</Text>. Other columns are ignored.
-          Rows with a number are marked present for the selected day; time is
-          saved as their time trial.
+          Sheet rows are marked present for the selected day; time is saved as
+          their time trial.
         </Text>
 
         <Text style={styles.sectionLabel}>Tryout day</Text>

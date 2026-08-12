@@ -2216,7 +2216,6 @@ export function RosterDataProvider({
 
       let present = 0;
       for (const row of rows) {
-        if (row.tryout_number == null) continue;
         const playerId = byName.get(
           playerNameKey(row.first_name, row.last_name)
         );
